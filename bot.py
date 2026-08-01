@@ -131,6 +131,7 @@ DEFAULT_GROK_IMAGINE_VARIANT = "quality"
 # xAI video generation polling
 VIDEO_POLL_INTERVAL_SEC = 5
 VIDEO_MAX_POLL_SEC = 600  # 10 minutes
+IMAGE_MAX_POLL_SEC = 120  # 2 minutes — image tasks rarely need more
 I2V_MAX_IMAGE_BYTES = 5 * 1024 * 1024
 DOWNLOAD_TIMEOUT_SEC = 120
 DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024
@@ -2640,13 +2641,16 @@ async def _kie_poll_task(
     status_msg: types.Message | None = None,
     status_label: str = "",
     prompt: str = "",
+    max_poll_sec: int = VIDEO_MAX_POLL_SEC,
 ) -> tuple[str | None, str | None]:
     """Poll kie.ai task until success/fail or timeout. Returns first result URL."""
     started = time.monotonic()
     last_status = None
     last_elapsed_shown = -1
+    last_state_printed: str | None = None
+    label = ""
 
-    while time.monotonic() - started < VIDEO_MAX_POLL_SEC:
+    while time.monotonic() - started < max_poll_sec:
         poll_data, poll_err, transient = await _kie_poll_once(session, task_id)
         if poll_err:
             if transient:
@@ -2656,8 +2660,10 @@ async def _kie_poll_task(
             return None, poll_err
 
         state = (poll_data.get("data") or {}).get("state", "unknown")
+        elapsed = int(time.monotonic() - started)
 
         if state == "success":
+            print(f"[kie poll] state=success task_id={task_id} elapsed={elapsed}s")
             result_json_raw = (poll_data.get("data") or {}).get("resultJson")
             if not result_json_raw:
                 return None, "No se recibió resultado. Intenta de nuevo."
@@ -2679,13 +2685,17 @@ async def _kie_poll_task(
             fail_code = fail_data.get("failCode")
             fail_msg = _sanitize_kie_fail_log(fail_data.get("failMsg"))
             print(
-                f"[kie poll] state=fail task_id={task_id} "
+                f"[kie poll] state=fail task_id={task_id} elapsed={elapsed}s "
                 f"failCode={fail_code} failMsg={fail_msg}"
             )
             return None, _kie_user_error("generación")
 
+        if state != last_state_printed:
+            label = _KIE_STATUS_LABELS.get(state, "")
+            print(f"[kie poll] state={state} task_id={task_id} elapsed={elapsed}s")
+            last_state_printed = state
+
         if status_msg and status_label:
-            elapsed = int(time.monotonic() - started)
             if state in _KIE_STATUS_LABELS and state != last_status:
                 label = _KIE_STATUS_LABELS[state]
                 await safe_edit_text(
@@ -2696,7 +2706,6 @@ async def _kie_poll_task(
                 last_status = state
                 last_elapsed_shown = elapsed
             elif state not in _KIE_STATUS_LABELS:
-                print(f"[kie poll] unknown state: {state} task_id={task_id}")
                 if elapsed - last_elapsed_shown >= 30:
                     await safe_edit_text(
                         status_msg,
@@ -2824,7 +2833,12 @@ async def _generate_kie(
             return None, size_err, None
 
     last_err: str | None = None
+    is_image_task = bool(kie_source_ref or image_data)
+    poll_timeout = IMAGE_MAX_POLL_SEC if is_image_task else VIDEO_MAX_POLL_SEC
+
     for attempt in range(GENERATE_MAX_RETRIES + 1):
+        if attempt > 0:
+            print(f"[kie generate] retry attempt {attempt}/{GENERATE_MAX_RETRIES}")
         async with aiohttp.ClientSession(timeout=KIE_REQUEST_TIMEOUT) as session:
             if kie_source_ref:
                 input_data: dict = {
@@ -2864,7 +2878,7 @@ async def _generate_kie(
                     continue
                 return None, last_err, None
 
-            result_url, poll_err = await _kie_poll_task(session, task_id)
+            result_url, poll_err = await _kie_poll_task(session, task_id, max_poll_sec=poll_timeout)
             if poll_err:
                 last_err = poll_err
                 if attempt < GENERATE_MAX_RETRIES:
