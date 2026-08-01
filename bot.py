@@ -137,6 +137,7 @@ DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024
 TELEGRAM_MAX_VIDEO_BYTES = 50 * 1024 * 1024
 POLL_MAX_RETRIES = 3
 POLL_RETRY_BACKOFF_SEC = (2, 4, 8)
+GENERATE_MAX_RETRIES = 5
 # xAI serves generated assets from *.x.ai / *.xai.com only (no broad CDN suffixes).
 ALLOWED_DOWNLOAD_HOST_SUFFIXES = (".x.ai", ".xai.com")
 # Kie.ai result and upload CDN hosts (exact + subdomain suffixes from API probes).
@@ -201,6 +202,10 @@ def _xai_user_error(context: str = "generación") -> str:
 
 def _kie_user_error(context: str = "generación") -> str:
     return f"Error en la {context}. Intenta de nuevo más tarde."
+
+
+def _retry_backoff(attempt: int) -> int:
+    return POLL_RETRY_BACKOFF_SEC[min(attempt, len(POLL_RETRY_BACKOFF_SEC) - 1)]
 
 
 def _prov_label(prov: str) -> str:
@@ -2801,50 +2806,77 @@ async def _generate_kie(
     enable_pro = _kie_enable_pro(model)
     source_index = 0
 
-    async with aiohttp.ClientSession(timeout=KIE_REQUEST_TIMEOUT) as session:
-        if kie_source_ref:
-            source_index = kie_source_ref.get("index", 0)
-            image_url, ref_err = await _kie_get_result_url_at_index(
+    source_image_url: str | None = None
+    if kie_source_ref:
+        source_index = kie_source_ref.get("index", 0)
+        async with aiohttp.ClientSession(timeout=KIE_REQUEST_TIMEOUT) as session:
+            source_image_url, ref_err = await _kie_get_result_url_at_index(
                 session,
                 kie_source_ref["task_id"],
                 source_index,
             )
             if ref_err:
                 return None, ref_err, None
-            input_data: dict = {
-                "image_urls": [image_url],
-                "prompt": prompt,
-            }
-            model_slug = KIE_IMAGE_I2I
-        elif image_data:
-            size_err = _validate_image_for_i2v(image_data)
-            if size_err:
-                return None, size_err, None
-            image_url, upload_err = await _kie_upload_image(session, image_data)
-            if upload_err:
-                return None, upload_err, None
-            input_data = {
-                "image_urls": [image_url],
-                "prompt": prompt,
-            }
-            model_slug = KIE_IMAGE_I2I
-        else:
-            input_data = {
-                "prompt": prompt,
-                "aspect_ratio": sessions.DEFAULT_VIDEO_ASPECT_RATIO,
-                "enable_pro": enable_pro,
-            }
-            model_slug = model["id"]
 
-        task_id, create_err = await _kie_create_task(session, model_slug, input_data)
-        if create_err:
-            return None, create_err, None
+    if image_data and not kie_source_ref:
+        size_err = _validate_image_for_i2v(image_data)
+        if size_err:
+            return None, size_err, None
 
-        result_url, poll_err = await _kie_poll_task(session, task_id)
-        if poll_err:
-            return None, poll_err, None
-        kie_meta = {"task_id": task_id, "index": 0, "provider": "kie"}
-        return [result_url], None, kie_meta
+    last_err: str | None = None
+    for attempt in range(GENERATE_MAX_RETRIES + 1):
+        async with aiohttp.ClientSession(timeout=KIE_REQUEST_TIMEOUT) as session:
+            if kie_source_ref:
+                input_data: dict = {
+                    "image_urls": [source_image_url],
+                    "prompt": prompt,
+                }
+                model_slug = KIE_IMAGE_I2I
+            elif image_data:
+                image_data.seek(0)
+                image_url, upload_err = await _kie_upload_image(session, image_data)
+                if upload_err:
+                    last_err = upload_err
+                    if attempt < GENERATE_MAX_RETRIES:
+                        print(f"[kie generate] upload attempt {attempt+1} failed, retrying...")
+                        await asyncio.sleep(_retry_backoff(attempt))
+                        continue
+                    return None, last_err, None
+                input_data = {
+                    "image_urls": [image_url],
+                    "prompt": prompt,
+                }
+                model_slug = KIE_IMAGE_I2I
+            else:
+                input_data = {
+                    "prompt": prompt,
+                    "aspect_ratio": sessions.DEFAULT_VIDEO_ASPECT_RATIO,
+                    "enable_pro": enable_pro,
+                }
+                model_slug = model["id"]
+
+            task_id, create_err = await _kie_create_task(session, model_slug, input_data)
+            if create_err:
+                last_err = create_err
+                if attempt < GENERATE_MAX_RETRIES:
+                    print(f"[kie generate] create task attempt {attempt+1} failed, retrying...")
+                    await asyncio.sleep(_retry_backoff(attempt))
+                    continue
+                return None, last_err, None
+
+            result_url, poll_err = await _kie_poll_task(session, task_id)
+            if poll_err:
+                last_err = poll_err
+                if attempt < GENERATE_MAX_RETRIES:
+                    print(f"[kie generate] poll attempt {attempt+1} failed ({poll_err}), retrying...")
+                    await asyncio.sleep(_retry_backoff(attempt))
+                    continue
+                return None, last_err, None
+
+            kie_meta = {"task_id": task_id, "index": 0, "provider": "kie"}
+            return [result_url], None, kie_meta
+
+    return None, last_err or _kie_user_error("generación"), None
 
 
 async def process_image_result(
