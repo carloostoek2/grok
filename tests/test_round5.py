@@ -211,6 +211,89 @@ async def test_image_edit_rejects_oversized_image():
 
 
 @pytest.mark.asyncio
+async def test_xai_t2i_sends_default_image_aspect_ratio(no_sleep):
+    captured: dict = {}
+
+    def capture_post(url, **kwargs):
+        captured["body"] = kwargs["json"]
+
+    with aioresponses() as mocked:
+        mocked.post(
+            "https://api.x.ai/v1/images/generations",
+            payload={"data": [{"url": "https://cdn.x.ai/img.png"}]},
+            callback=capture_post,
+        )
+        model = {**bot.MODELS["grok"], "provider": "xai"}
+        output, err = await bot._generate_xai(model, "sunset over the ocean")
+
+    assert err is None
+    assert output == ["https://cdn.x.ai/img.png"]
+    assert captured["body"]["aspect_ratio"] == sessions.DEFAULT_IMAGE_ASPECT_RATIO
+
+
+@pytest.mark.asyncio
+async def test_xai_t2i_returns_all_variants(no_sleep):
+    with aioresponses() as mocked:
+        mocked.post(
+            "https://api.x.ai/v1/images/generations",
+            payload={
+                "data": [
+                    {"url": "https://cdn.x.ai/a.png"},
+                    {"url": "https://cdn.x.ai/b.png"},
+                ]
+            },
+        )
+        model = {**bot.MODELS["grok"], "provider": "xai"}
+        output, err = await bot._generate_xai(model, "two options")
+
+    assert err is None
+    assert output == ["https://cdn.x.ai/a.png", "https://cdn.x.ai/b.png"]
+
+
+@pytest.mark.asyncio
+async def test_replicate_grok_t2i_sends_default_image_aspect_ratio(no_sleep):
+    model = {
+        "key": "grok",
+        "provider": "replicate",
+        "id": "xai/grok-imagine-image-quality",
+    }
+    captured: dict = {}
+
+    def fake_run(model_id, **kwargs):
+        captured["model_id"] = model_id
+        captured["input"] = kwargs.get("input", {})
+        return ["https://replicate.example/img.png"]
+
+    with patch.object(bot.replicate, "run", side_effect=fake_run):
+        output, err = await bot._generate_replicate(model, "a mountain lake")
+
+    assert err is None
+    assert output == ["https://replicate.example/img.png"]
+    assert captured["model_id"] == "xai/grok-imagine-image-quality"
+    assert captured["input"]["aspect_ratio"] == sessions.DEFAULT_IMAGE_ASPECT_RATIO
+
+
+@pytest.mark.asyncio
+async def test_replicate_seedream_t2i_does_not_send_aspect_ratio(no_sleep):
+    model = {
+        "key": "seedream",
+        "provider": "replicate",
+        "id": "some/seedream-model",
+    }
+    captured: dict = {}
+
+    def fake_run(model_id, **kwargs):
+        captured["input"] = kwargs.get("input", {})
+        return ["https://replicate.example/img.png"]
+
+    with patch.object(bot.replicate, "run", side_effect=fake_run):
+        output, err = await bot._generate_replicate(model, "a sleeping cat")
+
+    assert err is None
+    assert "aspect_ratio" not in captured["input"]
+
+
+@pytest.mark.asyncio
 async def test_video_i2v_rejects_oversized_image():
     uid = 5106
     msg = MagicMock()

@@ -287,8 +287,8 @@ def _validate_prompt(prompt: str, *, max_len: int = TELEGRAM_MAX_TEXT_LEN) -> st
     return None
 
 
-def _format_result_caption(prefix: str, prompt: str) -> str:
-    header = f"<b>{prefix}:</b> "
+def _format_result_caption(prefix: str, prompt: str, variant: str | None = None) -> str:
+    header = f"<b>{prefix} ({variant}):</b> " if variant else f"<b>{prefix}:</b> "
     ellipsis = "…"
     max_len = TELEGRAM_MAX_CAPTION_LEN
     if len(header) >= max_len:
@@ -2811,6 +2811,8 @@ async def _generate_replicate(model: dict, prompt: str, image_data: BytesIO | No
         else:
             input_data["image"] = image_data
             extra_kwargs["file_encoding_strategy"] = "base64"
+    elif model["key"] == "grok":
+        input_data["aspect_ratio"] = sessions.DEFAULT_IMAGE_ASPECT_RATIO
 
     output = await asyncio.to_thread(replicate.run, model_id, input=input_data, **extra_kwargs)
     return output, None
@@ -2860,6 +2862,7 @@ async def _generate_xai(
             "model": model["id"],
             "prompt": prompt,
             "n": 1,
+            "aspect_ratio": sessions.DEFAULT_IMAGE_ASPECT_RATIO,
         }
         url = f"{XAI_BASE}/images/generations"
 
@@ -2871,9 +2874,9 @@ async def _generate_xai(
                 return None, _xai_user_error("generación de imagen")
             data = await resp.json()
 
-    result = data["data"][0]
-    if "url" in result:
-        return [result["url"]], None
+    urls = [r["url"] for r in data.get("data", []) if isinstance(r, dict) and r.get("url")]
+    if urls:
+        return urls, None
     return None, "xAI no devolvio URL de imagen"
 
 
@@ -2900,11 +2903,6 @@ def _kie_video_slug(video_model: str, *, image_to_video: bool) -> str:
         # Kie 1.5 has no t2v slug; fall back to base text-to-video.
         return KIE_VIDEO_T2V
     return KIE_VIDEO_I2V if image_to_video else KIE_VIDEO_T2V
-
-
-def _kie_enable_pro(model: dict) -> bool:
-    variant = model.get("imagine_variant", DEFAULT_GROK_IMAGINE_VARIANT)
-    return variant == "quality"
 
 
 def _kie_headers() -> dict:
@@ -2984,8 +2982,8 @@ async def _kie_poll_task(
     status_label: str = "",
     prompt: str = "",
     max_poll_sec: int = VIDEO_MAX_POLL_SEC,
-) -> tuple[str | None, str | None]:
-    """Poll kie.ai task until success/fail or timeout. Returns first result URL."""
+) -> tuple[list[str] | None, str | None]:
+    """Poll kie.ai task until success/fail or timeout. Returns all result URLs."""
     started = time.monotonic()
     last_status = None
     last_elapsed_shown = -1
@@ -3016,11 +3014,15 @@ async def _kie_poll_task(
             urls = result_json.get("resultUrls") or []
             if not urls:
                 return None, "No se recibió URL de resultado. Intenta de nuevo."
-            result_url = urls[0]
-            if not _is_allowed_kie_asset_url(result_url):
-                print(f"[kie poll] blocked result host: {urllib.parse.urlparse(result_url).hostname}")
+            allowed = []
+            for u in urls:
+                if _is_allowed_kie_asset_url(u):
+                    allowed.append(u)
+                else:
+                    print(f"[kie poll] blocked result host: {urllib.parse.urlparse(u).hostname}")
+            if not allowed:
                 return None, _kie_user_error("descarga de resultado")
-            return result_url, None
+            return allowed, None
 
         if state == "fail":
             fail_data = poll_data.get("data") or {}
@@ -3154,7 +3156,6 @@ async def _generate_kie(
     if not KIE_API_KEY:
         return None, _KIE_NOT_CONFIGURED_MSG, None
 
-    enable_pro = _kie_enable_pro(model)
     source_index = 0
 
     source_image_url: str | None = None
@@ -3186,6 +3187,9 @@ async def _generate_kie(
                 input_data: dict = {
                     "image_urls": [source_image_url],
                     "prompt": prompt,
+                    "enable_pro": True,
+                    "nsfw_checker": False,
+                    "mode": "spicy",
                 }
                 model_slug = KIE_IMAGE_I2I
             elif image_data:
@@ -3201,13 +3205,17 @@ async def _generate_kie(
                 input_data = {
                     "image_urls": [image_url],
                     "prompt": prompt,
+                    "enable_pro": True,
+                    "nsfw_checker": False,
+                    "mode": "normal",
                 }
                 model_slug = KIE_IMAGE_I2I
             else:
                 input_data = {
                     "prompt": prompt,
-                    "aspect_ratio": sessions.DEFAULT_VIDEO_ASPECT_RATIO,
-                    "enable_pro": enable_pro,
+                    "aspect_ratio": sessions.DEFAULT_IMAGE_ASPECT_RATIO,
+                    "enable_pro": True,
+                    "nsfw_checker": False,
                 }
                 model_slug = model["id"]
 
@@ -3220,7 +3228,7 @@ async def _generate_kie(
                     continue
                 return None, last_err, None
 
-            result_url, poll_err = await _kie_poll_task(session, task_id, max_poll_sec=poll_timeout)
+            result_urls, poll_err = await _kie_poll_task(session, task_id, max_poll_sec=poll_timeout)
             if poll_err:
                 last_err = poll_err
                 if attempt < GENERATE_MAX_RETRIES:
@@ -3230,9 +3238,20 @@ async def _generate_kie(
                 return None, last_err, None
 
             kie_meta = {"task_id": task_id, "index": 0, "provider": "kie"}
-            return [result_url], None, kie_meta
+            return result_urls, None, kie_meta
 
     return None, last_err or _kie_user_error("generación"), None
+
+
+def _normalize_image_urls(output) -> list[str]:
+    raw = output if isinstance(output, list) else [output]
+    urls = []
+    for item in raw:
+        if hasattr(item, "url"):
+            item = item.url
+        if item is not None:
+            urls.append(str(item))
+    return urls
 
 
 async def process_image_result(
@@ -3251,36 +3270,66 @@ async def process_image_result(
         await status_msg.edit_text("Error: el modelo no devolvio nada. Intenta con otro prompt.")
         return
 
-    image_url = output[0] if isinstance(output, list) else output
-    if hasattr(image_url, "url"):
-        image_url = image_url.url
-
-    image_bytes, dl_err = await download_url(str(image_url), download_allowlist=download_allowlist)
-    if dl_err:
-        await status_msg.edit_text(dl_err)
+    urls = _normalize_image_urls(output)
+    if not urls:
+        await status_msg.edit_text("Error: el modelo no devolvio ninguna URL. Intenta con otro prompt.")
         return
-    photo = BufferedInputFile(image_bytes, filename="generated.png")
-    sent_msg = await message.answer_photo(
-        photo,
-        caption=_format_result_caption(prefix, prompt),
-        parse_mode="HTML",
-        reply_markup=_image_regenerate_keyboard(),
-    )
+
     provider = (
         kie_meta.get("provider")
         if kie_meta and kie_meta.get("task_id")
         else (regen_context or {}).get("provider", "unknown")
     )
-    sessions.save_generation_ref(
-        message.chat.id,
-        sent_msg.message_id,
-        kie_task_id=kie_meta.get("task_id") if kie_meta else None,
-        kie_index=kie_meta.get("index", 0) if kie_meta else 0,
-        provider=provider,
-        kind="image",
-        prompt=prompt,
-        regen=regen_context,
-    )
+
+    if len(urls) == 1:
+        image_bytes, dl_err = await download_url(urls[0], download_allowlist=download_allowlist)
+        if dl_err:
+            await status_msg.edit_text(dl_err)
+            return
+        photo = BufferedInputFile(image_bytes, filename="generated.png")
+        sent_msg = await message.answer_photo(
+            photo,
+            caption=_format_result_caption(prefix, prompt),
+            parse_mode="HTML",
+            reply_markup=_image_regenerate_keyboard(),
+        )
+        sessions.save_generation_ref(
+            message.chat.id,
+            sent_msg.message_id,
+            kie_task_id=kie_meta.get("task_id") if kie_meta else None,
+            kie_index=kie_meta.get("index", 0) if kie_meta else 0,
+            provider=provider,
+            kind="image",
+            prompt=prompt,
+            regen=regen_context,
+        )
+        if delete_status:
+            await status_msg.delete()
+        return
+
+    total = len(urls)
+    for i, url in enumerate(urls):
+        image_bytes, dl_err = await download_url(url, download_allowlist=download_allowlist)
+        if dl_err:
+            await status_msg.edit_text(dl_err)
+            return
+        photo = BufferedInputFile(image_bytes, filename="generated.png")
+        sent_msg = await message.answer_photo(
+            photo,
+            caption=_format_result_caption(prefix, prompt, variant=f"{i + 1}/{total}"),
+            parse_mode="HTML",
+            reply_markup=_image_regenerate_keyboard(),
+        )
+        sessions.save_generation_ref(
+            message.chat.id,
+            sent_msg.message_id,
+            kie_task_id=kie_meta.get("task_id") if kie_meta else None,
+            kie_index=i,
+            provider=provider,
+            kind="image",
+            prompt=prompt,
+            regen=regen_context,
+        )
     if delete_status:
         await status_msg.delete()
 
@@ -3550,6 +3599,7 @@ async def _generate_kie_video(
         "aspect_ratio": video_cfg["aspect_ratio"],
         "duration": kie_duration,
         "resolution": video_cfg["resolution"],
+        "nsfw_checker": False,
     }
 
     async with aiohttp.ClientSession(timeout=KIE_REQUEST_TIMEOUT) as session:
@@ -3577,13 +3627,14 @@ async def _generate_kie_video(
         if create_err:
             return None, create_err
 
-        return await _kie_poll_task(
+        urls, err = await _kie_poll_task(
             session,
             task_id,
             status_msg=status_msg,
             status_label=status_label,
             prompt=prompt,
         )
+        return (urls[0] if urls else None), err
 
 
 async def process_video_result(

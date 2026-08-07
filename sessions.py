@@ -18,6 +18,7 @@ class FsState:
 DEFAULT_MODEL = "grok"
 DEFAULT_GROK_IMAGINE_PROVIDER = "kie"
 DEFAULT_GROK_IMAGINE_VARIANT = "quality"
+DEFAULT_IMAGE_ASPECT_RATIO = "9:16"
 VALID_GROK_IMAGINE_PROVIDERS = ("xai", "replicate", "kie")
 VALID_GROK_IMAGINE_VARIANTS = ("standard", "quality")
 VALID_MODELS = ("grok", "seedream", "faceswap", "grok_video")

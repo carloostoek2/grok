@@ -194,17 +194,17 @@ async def test_kie_t2i_create_task_body(no_sleep, sessions_file):
     assert meta == {"task_id": "task-abc", "index": 0, "provider": "kie"}
     assert captured["body"]["model"] == "grok-imagine/text-to-image"
     assert captured["body"]["input"]["prompt"] == "sunset mountains"
-    assert captured["body"]["input"]["enable_pro"] is False
-    assert captured["body"]["input"]["aspect_ratio"] == sessions.DEFAULT_VIDEO_ASPECT_RATIO
+    assert captured["body"]["input"]["enable_pro"] is True
+    assert captured["body"]["input"]["nsfw_checker"] is False
+    assert captured["body"]["input"]["aspect_ratio"] == sessions.DEFAULT_IMAGE_ASPECT_RATIO
 
 
 @pytest.mark.asyncio
-async def test_kie_t2i_quality_uses_enable_pro(no_sleep):
+async def test_kie_t2i_always_sends_pro_and_no_nsfw_checker(no_sleep):
     model = {
         "key": "grok",
         "provider": "kie",
         "id": "grok-imagine/text-to-image",
-        "imagine_variant": "quality",
     }
     captured: dict = {}
 
@@ -217,6 +217,35 @@ async def test_kie_t2i_quality_uses_enable_pro(no_sleep):
         await bot._generate_kie(model, "detailed portrait")
 
     assert captured["body"]["input"]["enable_pro"] is True
+    assert captured["body"]["input"]["nsfw_checker"] is False
+
+
+@pytest.mark.asyncio
+async def test_kie_t2i_returns_all_result_urls(no_sleep):
+    model = {
+        "key": "grok",
+        "provider": "kie",
+        "id": "grok-imagine/text-to-image",
+    }
+    second_url = "https://kieai.redpandaai.co/static/result2.png"
+
+    with aioresponses() as mocked:
+        mocked.post(KIE_CREATE_URL, payload={"code": 200, "data": {"taskId": "task-abc"}})
+        mocked.get(
+            KIE_POLL_URL,
+            payload={
+                "code": 200,
+                "data": {
+                    "state": "success",
+                    "resultJson": json.dumps({"resultUrls": [RESULT_URL, second_url]}),
+                },
+            },
+        )
+        output, err, meta = await bot._generate_kie(model, "two options")
+
+    assert err is None
+    assert output == [RESULT_URL, second_url]
+    assert meta == {"task_id": "task-abc", "index": 0, "provider": "kie"}
 
 
 @pytest.mark.asyncio
@@ -257,6 +286,9 @@ async def test_kie_i2i_uploads_image_and_uses_image_urls(no_sleep):
     assert captured["create"]["model"] == bot.KIE_IMAGE_I2I
     assert captured["create"]["input"]["image_urls"] == ["https://tempfile.redpandaai.co/uploaded.jpg"]
     assert captured["create"]["input"]["prompt"] == "add sunglasses"
+    assert captured["create"]["input"]["enable_pro"] is True
+    assert captured["create"]["input"]["nsfw_checker"] is False
+    assert captured["create"]["input"]["mode"] == "normal"
 
 
 @pytest.mark.asyncio
@@ -283,6 +315,7 @@ async def test_kie_video_t2v_maps_duration_and_builds_body(no_sleep, sessions_fi
     assert captured["body"]["input"]["aspect_ratio"] == "9:16"
     assert captured["body"]["input"]["resolution"] == "480p"
     assert captured["body"]["input"]["mode"] == "normal"
+    assert captured["body"]["input"]["nsfw_checker"] is False
 
 
 @pytest.mark.asyncio
@@ -319,6 +352,7 @@ async def test_kie_video_15_i2v_uses_preview_slug(no_sleep, sessions_file):
     assert url == VIDEO_RESULT_URL
     assert captured["create"]["model"] == bot.KIE_VIDEO_15_I2V
     assert "mode" not in captured["create"]["input"]
+    assert captured["create"]["input"]["nsfw_checker"] is False
 
 
 @pytest.mark.asyncio
@@ -342,6 +376,7 @@ async def test_kie_video_15_t2v_uses_base_slug(no_sleep, sessions_file):
     assert url == VIDEO_RESULT_URL
     assert captured["body"]["model"] == bot.KIE_VIDEO_T2V
     assert captured["body"]["input"]["mode"] == "normal"
+    assert captured["body"]["input"]["nsfw_checker"] is False
 
 
 @pytest.mark.asyncio
@@ -1167,6 +1202,7 @@ async def test_kie_i2v_task_id_uses_spicy_mode(no_sleep, sessions_file):
     assert captured["body"]["input"]["index"] == 1
     assert captured["body"]["input"]["mode"] == "spicy"
     assert "image_urls" not in captured["body"]["input"]
+    assert captured["body"]["input"]["nsfw_checker"] is False
 
 
 @pytest.mark.asyncio
@@ -1198,6 +1234,7 @@ async def test_kie_i2v_external_image_forces_normal_when_spicy(no_sleep, session
     assert err is None
     assert captured["body"]["input"]["mode"] == "normal"
     assert "image_urls" in captured["body"]["input"]
+    assert captured["body"]["input"]["nsfw_checker"] is False
 
 
 @pytest.mark.asyncio
@@ -1235,6 +1272,9 @@ async def test_kie_i2i_from_task_id_resolves_image_url(no_sleep):
     assert output == [RESULT_URL]
     assert captured["create"]["input"]["image_urls"] == [ref_url]
     assert captured["create"]["model"] == bot.KIE_IMAGE_I2I
+    assert captured["create"]["input"]["enable_pro"] is True
+    assert captured["create"]["input"]["nsfw_checker"] is False
+    assert captured["create"]["input"]["mode"] == "spicy"
 
 
 @pytest.mark.asyncio
@@ -1305,6 +1345,52 @@ async def test_process_image_result_truncates_caption_keeps_full_ref(generation_
     assert len(caption) <= bot.TELEGRAM_MAX_CAPTION_LEN
     ref = sessions.get_generation_ref(201, 100)
     assert ref["regen"]["prompt"] == long_prompt
+
+
+@pytest.mark.asyncio
+async def test_process_image_result_sends_individual_photos_for_variants(generation_refs_file):
+    status_msg = MagicMock()
+    status_msg.delete = AsyncMock()
+    message = MagicMock()
+    message.chat.id = 300
+    sent_1 = MagicMock()
+    sent_1.message_id = 50
+    sent_2 = MagicMock()
+    sent_2.message_id = 51
+    message.answer_photo = AsyncMock(side_effect=[sent_1, sent_2])
+    second_url = "https://kieai.redpandaai.co/static/result2.png"
+    regen = bot._build_image_regen_context(
+        model={"key": "grok", "provider": "kie", "imagine_provider": "kie", "imagine_variant": "quality"},
+        user_id=503,
+        prompt="neon cat",
+        mode="text",
+    )
+
+    with patch.object(bot, "download_url", new_callable=AsyncMock, return_value=(b"png", None)):
+        await bot.process_image_result(
+            [RESULT_URL, second_url],
+            "neon cat",
+            status_msg,
+            message,
+            "Prompt",
+            download_allowlist="kie",
+            kie_meta={"task_id": "task-variants", "index": 0, "provider": "kie"},
+            regen_context=regen,
+        )
+
+    assert message.answer_photo.await_count == 2
+    calls = message.answer_photo.await_args_list
+    assert "Prompt (1/2)" in calls[0].kwargs["caption"]
+    assert "Prompt (2/2)" in calls[1].kwargs["caption"]
+    for call in calls:
+        assert call.kwargs["reply_markup"].inline_keyboard[0][0].callback_data == "regen"
+    ref_1 = sessions.get_generation_ref(300, 50)
+    ref_2 = sessions.get_generation_ref(300, 51)
+    assert ref_1["kie_task_id"] == "task-variants"
+    assert ref_1["kie_index"] == 0
+    assert ref_2["kie_index"] == 1
+    assert ref_1["regen"]["mode"] == "text"
+    status_msg.delete.assert_awaited_once()
 
 
 @pytest.mark.asyncio
