@@ -19,7 +19,7 @@ def load_config() -> dict:
         "input_dir": "input",
         "output_dir": "output",
         "api_token": "",
-        "model": "ddvinh1/inswapper:25bdae46f2713138640b6e8c04dc4ca18625ce95b1863936b053eee42d9ba6db"
+        "model": "cdingram/face-swap:d1d6ea8c8be89d664a07a457526f7128109dee7030fdac424788d762c71ed111"
     }
 
 

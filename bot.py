@@ -78,9 +78,9 @@ MODELS = {
     },
     "faceswap": {
         "key": "faceswap",
-        "id": "ddvinh1/inswapper:25bdae46f2713138640b6e8c04dc4ca18625ce95b1863936b053eee42d9ba6db",
+        "id": "cdingram/face-swap:d1d6ea8c8be89d664a07a457526f7128109dee7030fdac424788d762c71ed111",
         "name": "Face Swap",
-        "desc": "Intercambio de caras con inswapper",
+        "desc": "Intercambio de caras (cdingram/face-swap)",
         "provider": "replicate",
     },
     "grok_video": {
@@ -1952,10 +1952,11 @@ def _faceswap_replicate_single(
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     client = _get_replicate_client()
+    # cdingram/face-swap: swap_image = face to insert, input_image = target scene
     with open(source_path, "rb") as src_f, open(target_path, "rb") as tgt_f:
         output = client.run(
             MODELS["faceswap"]["id"],
-            input={"source_img": src_f, "target_img": tgt_f},
+            input={"swap_image": src_f, "input_image": tgt_f},
             wait=REPLICATE_WAIT_SEC,
         )
     result_path = output_dir / target_path.name

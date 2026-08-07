@@ -13,13 +13,17 @@ import replicate
 class ReplicateFaceSwapper:
     """Face swapper using Replicate API."""
 
-    def __init__(self, api_token: str, model: str = "ddvinh1/inswapper:25bdae46f2713138640b6e8c04dc4ca18625ce95b1863936b053eee42d9ba6db"):
+    def __init__(
+        self,
+        api_token: str,
+        model: str = "cdingram/face-swap:d1d6ea8c8be89d664a07a457526f7128109dee7030fdac424788d762c71ed111",
+    ):
         """
         Initialize with Replicate API token.
 
         Args:
             api_token: Replicate API token
-            model: Model identifier (default: ddvinh1/inswapper)
+            model: Model identifier (owner/name:version)
         """
         self.client = replicate.Client(api_token=api_token)
         self.model = model
@@ -33,23 +37,22 @@ class ReplicateFaceSwapper:
         Swap face using Replicate API.
 
         Args:
-            source_path: Path to source face image
-            target_path: Path to target image
+            source_path: Path to source face image (swap_image)
+            target_path: Path to target image (input_image)
 
         Returns:
             Tuple of (url, file_content)
         """
-        # Use replicate.run() as shown in docs
+        # cdingram/face-swap: swap_image = face, input_image = target scene
         output = replicate.run(
             self.model,
             input={
-                "source_img": open(source_path, "rb"),
-                "target_img": open(target_path, "rb")
+                "swap_image": open(source_path, "rb"),
+                "input_image": open(target_path, "rb"),
             }
         )
 
-        # output is a file-like object with .url and .read()
-        return output.url, output
+        return self._normalize_output(output)
 
     def swap_face_urls(
         self,
@@ -60,8 +63,8 @@ class ReplicateFaceSwapper:
         Swap face using URLs.
 
         Args:
-            source_url: URL to source face image
-            target_url: URL to target image
+            source_url: URL to source face image (swap_image)
+            target_url: URL to target image (input_image)
 
         Returns:
             Tuple of (url, file_content)
@@ -69,12 +72,21 @@ class ReplicateFaceSwapper:
         output = replicate.run(
             self.model,
             input={
-                "source_img": source_url,
-                "target_img": target_url
+                "swap_image": source_url,
+                "input_image": target_url,
             }
         )
 
-        return output.url, output
+        return self._normalize_output(output)
+
+    @staticmethod
+    def _normalize_output(output) -> tuple:
+        """Normalize Replicate output to (url, readable). URI string or file-like."""
+        if isinstance(output, str):
+            return output, output
+        if hasattr(output, "url"):
+            return output.url, output
+        return str(output), output
 
 
 def process_batch_replicate(
@@ -82,7 +94,7 @@ def process_batch_replicate(
     input_dir: Path,
     output_dir: Path,
     api_token: str,
-    model: str = "ddvinh1/inswapper:25bdae46f2713138640b6e8c04dc4ca18625ce95b1863936b053eee42d9ba6db",
+    model: str = "cdingram/face-swap:d1d6ea8c8be89d664a07a457526f7128109dee7030fdac424788d762c71ed111",
     batch_size: int = 10
 ) -> dict:
     """
@@ -131,12 +143,18 @@ def process_batch_replicate(
     # Process each image
     for target_path in tqdm(image_files, desc="Processing"):
         try:
-            _, output = swapper.swap_face(source_path, str(target_path))
+            url, output = swapper.swap_face(source_path, str(target_path))
 
-            # Write output to disk
+            # Write output to disk (file-like or URI string)
             output_path = output_dir / target_path.name
+            if hasattr(output, "read"):
+                data = output.read()
+            else:
+                import urllib.request
+                with urllib.request.urlopen(str(url), timeout=120) as resp:
+                    data = resp.read()
             with open(output_path, "wb") as f:
-                f.write(output.read())
+                f.write(data)
 
             stats["processed"] += 1
 
