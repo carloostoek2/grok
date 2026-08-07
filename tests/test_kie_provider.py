@@ -410,7 +410,7 @@ async def test_kie_video_missing_api_key():
 async def test_kie_upload_http_500(no_sleep):
     model = {"key": "grok", "provider": "kie", "id": "grok-imagine/text-to-image", "imagine_variant": "standard"}
     with aioresponses() as mocked:
-        mocked.post(KIE_UPLOAD_URL, status=500, body="error")
+        mocked.post(KIE_UPLOAD_URL, status=500, body="error", repeat=True)
         output, err, meta = await bot._generate_kie(model, "edit", image_data=BytesIO(b"jpeg"))
     assert output is None
     assert err == bot._kie_user_error("subida de imagen")
@@ -420,7 +420,7 @@ async def test_kie_upload_http_500(no_sleep):
 async def test_kie_upload_http_200_code_402(no_sleep):
     model = {"key": "grok", "provider": "kie", "id": "grok-imagine/text-to-image", "imagine_variant": "standard"}
     with aioresponses() as mocked:
-        mocked.post(KIE_UPLOAD_URL, payload={"code": 402, "msg": "Credits insufficient"})
+        mocked.post(KIE_UPLOAD_URL, payload={"code": 402, "msg": "Credits insufficient"}, repeat=True)
         output, err, meta = await bot._generate_kie(model, "edit", image_data=BytesIO(b"jpeg"))
     assert output is None
     assert err == bot._kie_user_error("subida de imagen")
@@ -430,7 +430,7 @@ async def test_kie_upload_http_200_code_402(no_sleep):
 async def test_kie_upload_missing_file_url(no_sleep):
     model = {"key": "grok", "provider": "kie", "id": "grok-imagine/text-to-image", "imagine_variant": "standard"}
     with aioresponses() as mocked:
-        mocked.post(KIE_UPLOAD_URL, payload={"code": 200, "data": {}})
+        mocked.post(KIE_UPLOAD_URL, payload={"code": 200, "data": {}}, repeat=True)
         output, err, meta = await bot._generate_kie(model, "edit", image_data=BytesIO(b"jpeg"))
     assert output is None
     assert "subir la imagen" in err
@@ -443,6 +443,7 @@ async def test_kie_upload_rejects_bad_file_url_host(no_sleep):
         mocked.post(
             KIE_UPLOAD_URL,
             payload={"code": 200, "data": {"fileUrl": "https://evil.example.com/x.jpg"}},
+            repeat=True,
         )
         output, err, meta = await bot._generate_kie(model, "edit", image_data=BytesIO(b"jpeg"))
     assert output is None
@@ -484,7 +485,7 @@ async def test_kie_poll_timeout(no_sleep):
     fake_monotonic.counter = start
 
     with aioresponses() as mocked:
-        mocked.post(KIE_CREATE_URL, payload={"code": 200, "data": {"taskId": "task-abc"}})
+        mocked.post(KIE_CREATE_URL, payload={"code": 200, "data": {"taskId": "task-abc"}}, repeat=True)
         mocked.get(KIE_POLL_URL, payload={"code": 200, "data": {"state": "generating"}}, repeat=True)
         with patch("bot.time.monotonic", side_effect=fake_monotonic):
             output, err, meta = await bot._generate_kie(model, "slow prompt")
@@ -502,10 +503,11 @@ async def test_kie_poll_fail_returns_user_error(no_sleep):
         "imagine_variant": "standard",
     }
     with aioresponses() as mocked:
-        mocked.post(KIE_CREATE_URL, payload={"code": 200, "data": {"taskId": "task-abc"}})
+        mocked.post(KIE_CREATE_URL, payload={"code": 200, "data": {"taskId": "task-abc"}}, repeat=True)
         mocked.get(
             KIE_POLL_URL,
             payload={"code": 200, "data": {"state": "fail", "failCode": 99, "failMsg": "policy"}},
+            repeat=True,
         )
         output, err, meta = await bot._generate_kie(model, "prompt")
 
@@ -517,7 +519,7 @@ async def test_kie_poll_fail_returns_user_error(no_sleep):
 async def test_kie_create_task_error(no_sleep):
     model = {"key": "grok", "provider": "kie", "id": "grok-imagine/text-to-image", "imagine_variant": "standard"}
     with aioresponses() as mocked:
-        mocked.post(KIE_CREATE_URL, payload={"code": 422, "msg": "bad input"})
+        mocked.post(KIE_CREATE_URL, payload={"code": 422, "msg": "bad input"}, repeat=True)
         output, err, meta = await bot._generate_kie(model, "prompt")
     assert output is None
     assert err == bot._kie_user_error("inicio de tarea")
@@ -709,7 +711,7 @@ async def test_handle_cfg_video_model_switch_resets_aspect(sessions_file, mock_c
 async def test_kie_upload_rejects_success_false(no_sleep):
     model = {"key": "grok", "provider": "kie", "id": "grok-imagine/text-to-image", "imagine_variant": "standard"}
     with aioresponses() as mocked:
-        mocked.post(KIE_UPLOAD_URL, payload={"code": 200, "success": False, "msg": "failed"})
+        mocked.post(KIE_UPLOAD_URL, payload={"code": 200, "success": False, "msg": "failed"}, repeat=True)
         output, err, meta = await bot._generate_kie(model, "edit", image_data=BytesIO(b"jpeg"))
     assert output is None
     assert err == bot._kie_user_error("subida de imagen")
@@ -728,8 +730,8 @@ def test_kie_download_allowlist_includes_tempfile_aiquickdraw():
 async def test_kie_poll_malformed_success_missing_result_json(no_sleep):
     model = {"key": "grok", "provider": "kie", "id": "grok-imagine/text-to-image", "imagine_variant": "standard"}
     with aioresponses() as mocked:
-        mocked.post(KIE_CREATE_URL, payload={"code": 200, "data": {"taskId": "task-abc"}})
-        mocked.get(KIE_POLL_URL, payload={"code": 200, "data": {"state": "success"}})
+        mocked.post(KIE_CREATE_URL, payload={"code": 200, "data": {"taskId": "task-abc"}}, repeat=True)
+        mocked.get(KIE_POLL_URL, payload={"code": 200, "data": {"state": "success"}}, repeat=True)
         output, err, meta = await bot._generate_kie(model, "prompt")
     assert output is None
     assert "resultado" in err.lower()
@@ -739,10 +741,11 @@ async def test_kie_poll_malformed_success_missing_result_json(no_sleep):
 async def test_kie_poll_malformed_success_bad_json(no_sleep):
     model = {"key": "grok", "provider": "kie", "id": "grok-imagine/text-to-image", "imagine_variant": "standard"}
     with aioresponses() as mocked:
-        mocked.post(KIE_CREATE_URL, payload={"code": 200, "data": {"taskId": "task-abc"}})
+        mocked.post(KIE_CREATE_URL, payload={"code": 200, "data": {"taskId": "task-abc"}}, repeat=True)
         mocked.get(
             KIE_POLL_URL,
             payload={"code": 200, "data": {"state": "success", "resultJson": "not-json"}},
+            repeat=True,
         )
         output, err, meta = await bot._generate_kie(model, "prompt")
     assert output is None
@@ -753,7 +756,7 @@ async def test_kie_poll_malformed_success_bad_json(no_sleep):
 async def test_kie_poll_success_empty_result_urls(no_sleep):
     model = {"key": "grok", "provider": "kie", "id": "grok-imagine/text-to-image", "imagine_variant": "standard"}
     with aioresponses() as mocked:
-        mocked.post(KIE_CREATE_URL, payload={"code": 200, "data": {"taskId": "task-abc"}})
+        mocked.post(KIE_CREATE_URL, payload={"code": 200, "data": {"taskId": "task-abc"}}, repeat=True)
         mocked.get(
             KIE_POLL_URL,
             payload={
@@ -763,6 +766,7 @@ async def test_kie_poll_success_empty_result_urls(no_sleep):
                     "resultJson": json.dumps({"resultUrls": []}),
                 },
             },
+            repeat=True,
         )
         output, err, meta = await bot._generate_kie(model, "prompt")
     assert output is None
@@ -773,7 +777,7 @@ async def test_kie_poll_success_empty_result_urls(no_sleep):
 async def test_kie_poll_success_blocks_evil_result_host(no_sleep):
     model = {"key": "grok", "provider": "kie", "id": "grok-imagine/text-to-image", "imagine_variant": "standard"}
     with aioresponses() as mocked:
-        mocked.post(KIE_CREATE_URL, payload={"code": 200, "data": {"taskId": "task-abc"}})
+        mocked.post(KIE_CREATE_URL, payload={"code": 200, "data": {"taskId": "task-abc"}}, repeat=True)
         mocked.get(
             KIE_POLL_URL,
             payload={
@@ -783,6 +787,7 @@ async def test_kie_poll_success_blocks_evil_result_host(no_sleep):
                     "resultJson": json.dumps({"resultUrls": ["https://evil.example.com/x.png"]}),
                 },
             },
+            repeat=True,
         )
         output, err, meta = await bot._generate_kie(model, "prompt")
     assert output is None
@@ -793,8 +798,8 @@ async def test_kie_poll_success_blocks_evil_result_host(no_sleep):
 async def test_kie_poll_http_401_aborts_immediately(no_sleep):
     model = {"key": "grok", "provider": "kie", "id": "grok-imagine/text-to-image", "imagine_variant": "standard"}
     with aioresponses() as mocked:
-        mocked.post(KIE_CREATE_URL, payload={"code": 200, "data": {"taskId": "task-abc"}})
-        mocked.get(KIE_POLL_URL, status=401, body="unauthorized")
+        mocked.post(KIE_CREATE_URL, payload={"code": 200, "data": {"taskId": "task-abc"}}, repeat=True)
+        mocked.get(KIE_POLL_URL, status=401, body="unauthorized", repeat=True)
         mocked.get(KIE_POLL_URL, payload=_kie_success_poll_payload())
         output, err, meta = await bot._generate_kie(model, "prompt")
     assert output is None
@@ -805,7 +810,7 @@ async def test_kie_poll_http_401_aborts_immediately(no_sleep):
 async def test_kie_create_task_http_500(no_sleep):
     model = {"key": "grok", "provider": "kie", "id": "grok-imagine/text-to-image", "imagine_variant": "standard"}
     with aioresponses() as mocked:
-        mocked.post(KIE_CREATE_URL, status=500, body="boom")
+        mocked.post(KIE_CREATE_URL, status=500, body="boom", repeat=True)
         output, err, meta = await bot._generate_kie(model, "prompt")
     assert output is None
     assert err == bot._kie_user_error("inicio de tarea")
@@ -815,7 +820,7 @@ async def test_kie_create_task_http_500(no_sleep):
 async def test_kie_create_task_missing_task_id(no_sleep):
     model = {"key": "grok", "provider": "kie", "id": "grok-imagine/text-to-image", "imagine_variant": "standard"}
     with aioresponses() as mocked:
-        mocked.post(KIE_CREATE_URL, payload={"code": 200, "data": {}})
+        mocked.post(KIE_CREATE_URL, payload={"code": 200, "data": {}}, repeat=True)
         output, err, meta = await bot._generate_kie(model, "prompt")
     assert output is None
     assert "iniciar" in err.lower()
