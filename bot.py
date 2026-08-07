@@ -31,6 +31,7 @@ from aiogram.types import (
 from dotenv import load_dotenv
 
 import sessions
+import variables_store
 import download
 
 load_dotenv()
@@ -49,10 +50,25 @@ def _parse_allowed_telegram_ids() -> set[int] | None:
     return {int(item.strip()) for item in raw.split(",") if item.strip()}
 
 
+def _parse_admin_telegram_ids() -> set[int] | None:
+    """Optional explicit admin list for the /listas panel.
+
+    When unset, the panel is available to every allowed user (ALLOWED_TELEGRAM_IDS),
+    and to everyone when the allowlist is also unset.
+    """
+    raw = os.environ.get("VARIABLES_ADMIN_IDS", "").strip()
+    if not raw:
+        return None
+    return {int(item.strip()) for item in raw.split(",") if item.strip()}
+
+
 ALLOWED_TELEGRAM_IDS = _parse_allowed_telegram_ids()
+VARIABLES_ADMIN_IDS = _parse_admin_telegram_ids()
 TELEGRAM_MAX_CAPTION_LEN = 1024
 TELEGRAM_CAPTION_COLLECT_THRESHOLD = 1020
 TELEGRAM_MAX_TEXT_LEN = 4096
+# /variables N — max images per batch
+VARIABLES_MAX = 10
 
 SOURCES_DIR = Path(__file__).parent / "sources"
 INTEGRATE_REFS_DIR = Path(__file__).parent / "integrate_refs"
@@ -763,6 +779,80 @@ dp.callback_query.middleware(AllowlistMiddleware())
 
 
 # ---------------------------------------------------------------------------
+# /listas admin panel (variables lists)
+#
+# Registered here (before the generic text handlers) so the FSM text-input
+# handlers win over handle_text/handle_reply_edit while the admin is typing
+# an item/template; StateFilter keeps them inert for every other message.
+# ---------------------------------------------------------------------------
+import variables_flow
+
+_VARS_DEPS = {
+    "safe_edit_text": safe_edit_text,
+    "allowed_telegram_ids": ALLOWED_TELEGRAM_IDS,
+    "variables_admin_ids": VARIABLES_ADMIN_IDS,
+}
+
+variables_flow.register_variables_handlers(dp, _VARS_DEPS)
+
+# Re-exports for tests (variables admin panel)
+cmd_listas = variables_flow.cmd_listas
+handle_var_open = variables_flow.handle_var_open
+handle_var_add = variables_flow.handle_var_add
+handle_var_edit_list = variables_flow.handle_var_edit_list
+handle_var_del_list = variables_flow.handle_var_del_list
+handle_var_item_edit = variables_flow.handle_var_item_edit
+handle_var_item_del = variables_flow.handle_var_item_del
+handle_var_tmpl = variables_flow.handle_var_tmpl
+handle_var_back = variables_flow.handle_var_back
+handle_var_close = variables_flow.handle_var_close
+handle_var_cancel = variables_flow.handle_var_cancel
+handle_add_text = variables_flow.handle_add_text
+handle_edit_text = variables_flow.handle_edit_text
+handle_template_text = variables_flow.handle_template_text
+
+_VAR_INPUT_HANDLERS = {
+    variables_flow._state_key(variables_flow.VarStates.add_item): handle_add_text,
+    variables_flow._state_key(variables_flow.VarStates.edit_text): handle_edit_text,
+    variables_flow._state_key(variables_flow.VarStates.template): handle_template_text,
+}
+
+
+async def _delegate_variables_input(message: types.Message) -> bool:
+    """Run the active /listas panel text-input handler for this user, if any.
+
+    Defensive guard: the FSM text handlers are registered before the generic
+    handlers (handle_text / handle_reply_edit), so this normally never fires.
+    It guarantees that a text sent while the admin is adding/editing a list
+    item or template can never be intercepted by the image-generation
+    confirmation, even if the registration order ever regresses.
+    """
+    try:
+        from aiogram.fsm.context import FSMContext
+        from aiogram.fsm.storage.base import StorageKey
+
+        key = StorageKey(
+            chat_id=message.chat.id,
+            user_id=message.from_user.id,
+            bot_id=bot.id,
+            thread_id=getattr(message, "message_thread_id", None),
+        )
+        state = await dp.storage.get_state(key)
+    except Exception as exc:
+        # Fail open (normal generation flow) but surface the lookup problem.
+        print(f"[variables] FSM state lookup failed: {exc}")
+        return False
+    handler = _VAR_INPUT_HANDLERS.get(state)
+    if handler is None:
+        return False
+    ctx = FSMContext(storage=dp.storage, key=key)
+    # Let handler errors propagate to the dispatcher error middleware, exactly
+    # as they would on the normal FSM path.
+    await handler(message, ctx)
+    return True
+
+
+# ---------------------------------------------------------------------------
 # /start
 # ---------------------------------------------------------------------------
 @dp.message(Command("start"))
@@ -1169,6 +1259,11 @@ async def handle_text(message: types.Message):
     if _is_bot_command_message(message):
         return
 
+    # Defensive: never let /listas panel text-input be intercepted by the
+    # generation confirmation (the FSM handlers normally catch it first).
+    if await _delegate_variables_input(message):
+        return
+
     state = get_user_state(message.from_user.id)
 
     if _is_awaiting_long_prompt_text(state):
@@ -1573,11 +1668,247 @@ async def _complete_long_prompt_collection(message: types.Message, prompt: str) 
 
 
 # ---------------------------------------------------------------------------
+# /variables N — batch image editing with random pose/angle/action combos (Kie)
+# ---------------------------------------------------------------------------
+def _is_variables_command(text: str | None) -> bool:
+    """True when a caption/reply text is a /variables invocation.
+
+    Requires a word boundary after 'variables' so captions like
+    '/variablesfoo' are not hijacked from the normal edit path.
+    """
+    if not text:
+        return False
+    return re.match(r"^/variables(?:@|(?:\s|$))", text.strip(), re.IGNORECASE) is not None
+
+
+def _parse_variables_count(text: str | None) -> int | None:
+    """Parse '/variables N' → N clamped to [1, VARIABLES_MAX].
+
+    Bare '/variables' → 1. Non-numeric or zero argument → None (invalid).
+    """
+    if not text:
+        return None
+    m = re.match(r"^/variables(?:@[A-Za-z0-9_]+)?(?:\s+(\d+))?\s*$", text.strip(), re.IGNORECASE)
+    if not m:
+        return None
+    if m.group(1) is None:
+        return 1
+    n = int(m.group(1))
+    if n < 1:
+        return None
+    return min(n, VARIABLES_MAX)
+
+
+@dp.message(Command("variables"))
+async def cmd_variables_help(message: types.Message):
+    """'/variables' text command.
+
+    aiogram's Command filter matches `text or caption`, and this handler is
+    registered before handle_photo_caption/handle_reply_edit, so it must
+    delegate photo captions and replies to the batch entry points; only bare
+    text (no photo/reply) shows usage.
+    """
+    if message.reply_to_message:
+        await cmd_variables_reply(message)
+        return
+    if message.photo and not (
+        isinstance(message.media_group_id, str) and message.media_group_id
+    ):
+        await cmd_variables_photo(message)
+        return
+    await message.answer(
+        "Para usar <b>/variables</b>, envía una foto con el caption "
+        "<b>/variables N</b>, o responde a una foto con <b>/variables N</b>, "
+        f"para generar N ediciones (N = 1-{VARIABLES_MAX}) combinando "
+        "aleatoriamente poses, ángulos y acciones.\n\n"
+        "Gestiona las listas con <b>/listas</b>.",
+        parse_mode="HTML",
+    )
+
+
+async def _run_variables_batch(
+    message: types.Message,
+    count: int,
+    image_data: BytesIO | None,
+    kie_source_ref: dict | None,
+    *,
+    source_file_id: str | None = None,
+) -> None:
+    """Run `count` Kie image edits, each with a fresh random variable combo.
+
+    Always uses the original source image (never chains results), relaunching
+    automatically after each result arrives. The batch is cancellable and stops
+    on the first provider error.
+    """
+    uid = message.from_user.id
+    if not KIE_API_KEY:
+        await message.answer(_KIE_NOT_CONFIGURED_MSG)
+        return
+
+    lists = variables_store.get_lists()
+    for name in variables_store.LIST_NAMES:
+        if not lists[name]:
+            await message.answer(
+                f"La lista de <b>{variables_flow.LIST_LABELS[name]}</b> está vacía.\n"
+                "Usa <b>/listas</b> para añadir opciones antes de usar /variables.",
+                parse_mode="HTML",
+            )
+            return
+
+    # /variables always edits through the Kie provider (image-to-image).
+    variant = get_grok_imagine_config(uid)["variant"]
+    model = _grok_model_for_config(uid, "kie", variant)
+
+    cancel_event = _start_job(uid, "variables")
+    status_msg = None
+    used_combos: set[tuple[str, str, str]] = set()
+    completed = 0
+    try:
+        status_msg = await message.answer(
+            f"🎲 <b>Variables</b>: editando 0/{count} imágenes con {model['name']}...",
+            parse_mode="HTML",
+            reply_markup=_cancel_job_keyboard(),
+        )
+        for i in range(1, count + 1):
+            if _job_cancelled(cancel_event):
+                await status_msg.edit_text(
+                    f"⏹ Cancelado. Completadas {completed}/{count} imágenes.",
+                    reply_markup=None,
+                )
+                return
+            await status_msg.edit_text(
+                f"🎲 <b>Variables</b>: editando {i}/{count} imágenes con {model['name']}...",
+                parse_mode="HTML",
+                reply_markup=_cancel_job_keyboard(),
+            )
+            combo = variables_store.random_combination(exclude=used_combos)
+            if combo is None:
+                await status_msg.edit_text(
+                    "No se pudo construir el prompt: alguna lista está vacía. Usa /listas.",
+                    reply_markup=None,
+                )
+                return
+            prompt, combo_tuple = combo
+            used_combos.add(combo_tuple)
+
+            output, err, kie_meta = await generate_image(
+                model,
+                prompt,
+                image_data,
+                kie_source_ref=kie_source_ref,
+            )
+            if _job_cancelled(cancel_event):
+                await status_msg.edit_text(
+                    f"⏹ Cancelado. Completadas {completed}/{count} imágenes.",
+                    reply_markup=None,
+                )
+                return
+            if err:
+                await status_msg.edit_text(
+                    f"Error en la imagen {i}/{count}: {err}",
+                    reply_markup=None,
+                )
+                return
+            await process_image_result(
+                output,
+                prompt,
+                status_msg,
+                message,
+                f"Variables {i}/{count}",
+                download_allowlist=_download_allowlist_for_provider("kie"),
+                kie_meta=kie_meta,
+                regen_context=_build_image_regen_context(
+                    model=model,
+                    user_id=uid,
+                    prompt=prompt,
+                    mode="edit",
+                    source_file_id=source_file_id,
+                    kie_source_ref=kie_source_ref,
+                ),
+                delete_status=False,
+            )
+            completed = i
+
+        await status_msg.edit_text(
+            f"✅ Listo: {completed}/{count} imágenes generadas.",
+            reply_markup=None,
+        )
+    except replicate.exceptions.ReplicateError as e:
+        backend = _prov_label(model.get("provider", "?"))
+        if status_msg:
+            await status_msg.edit_text(f"Error de {backend}: {e}", reply_markup=None)
+        else:
+            await message.answer(f"Error de {backend}: {e}")
+    except Exception as e:
+        if status_msg:
+            await status_msg.edit_text(f"Error inesperado: {e}", reply_markup=None)
+        else:
+            await message.answer(f"Error inesperado: {e}")
+    finally:
+        _finish_job(uid, cancel_event)
+
+
+async def cmd_variables_photo(message: types.Message) -> None:
+    """Photo sent with a '/variables N' caption."""
+    count = _parse_variables_count(message.caption)
+    if count is None:
+        await message.answer(
+            f"Uso: envía la foto con el caption <b>/variables N</b> (N = 1-{VARIABLES_MAX}).\n\n"
+            "Gestiona las listas con <b>/listas</b>.",
+            parse_mode="HTML",
+        )
+        return
+    image_data = await _download_telegram_file_id(message.photo[-1].file_id)
+    await _run_variables_batch(
+        message,
+        count,
+        image_data,
+        None,
+        source_file_id=message.photo[-1].file_id,
+    )
+
+
+async def cmd_variables_reply(message: types.Message) -> None:
+    """'/variables N' sent as a reply to a photo."""
+    count = _parse_variables_count(message.text or message.caption)
+    if count is None:
+        await message.answer(
+            f"Uso: responde a una foto con <b>/variables N</b> (N = 1-{VARIABLES_MAX}).\n\n"
+            "Gestiona las listas con <b>/listas</b>.",
+            parse_mode="HTML",
+        )
+        return
+    if not message.reply_to_message or not message.reply_to_message.photo:
+        await message.answer("Responde a una foto para editarla con /variables.")
+        return
+    # Prefer the full-resolution Kie task ref for bot-generated images; fall
+    # back to downloading the replied photo from Telegram.
+    kie_source_ref = _resolve_reply_kie_ref(message.reply_to_message)
+    image_data = None
+    source_file_id = None
+    if kie_source_ref is None:
+        image_data = await _download_telegram_photo(message.reply_to_message.photo[-1])
+        source_file_id = message.reply_to_message.photo[-1].file_id
+    await _run_variables_batch(
+        message,
+        count,
+        image_data,
+        kie_source_ref,
+        source_file_id=source_file_id,
+    )
+
+
+# ---------------------------------------------------------------------------
 # PHOTO + CAPTION  — route by model
 # ---------------------------------------------------------------------------
 @dp.message(lambda m: m.photo and m.caption and not m.media_group_id)
 async def handle_photo_caption(message: types.Message):
     if isinstance(message.media_group_id, str) and message.media_group_id:
+        return
+
+    # --- variables: photo + '/variables N' caption → random combo batch edit ---
+    if _is_variables_command(message.caption):
+        await cmd_variables_photo(message)
         return
 
     state = get_user_state(message.from_user.id)
@@ -1665,7 +1996,17 @@ async def handle_photo_no_caption(message: types.Message):
 # ---------------------------------------------------------------------------
 @dp.message(lambda m: m.text and m.reply_to_message)
 async def handle_reply_edit(message: types.Message):
+    # Defensive: never let /listas panel text-input be intercepted by the
+    # reply-edit flow (the FSM handlers normally catch it first).
+    if await _delegate_variables_input(message):
+        return
+
     state = get_user_state(message.from_user.id)
+
+    # --- variables: '/variables N' replied to a photo → random combo batch ---
+    if _is_variables_command(message.text):
+        await cmd_variables_reply(message)
+        return
 
     if _is_awaiting_long_prompt_text(state):
         await _complete_long_prompt_collection(message, message.text.strip())

@@ -27,6 +27,17 @@ Use `/config` (or `/video`) to change the model (`grok-imagine-video` base or `g
 
 **Data privacy:** When Kie.ai is the active provider, prompts and uploaded images are sent to Kie.ai (third-party) for processing. Operators should inform users accordingly.
 
+## Batch image editing with variables (/variables)
+
+`/variables` runs a batch of image edits through the **Kie.ai** provider, each with a prompt built from a random combination of three admin-managed lists: **poses**, **ángulos** and **acciones**.
+
+- Send a photo with caption `/variables 5` (or reply to a photo with `/variables 5`) to generate 5 edits. `N` is clamped to 1–10.
+- Every iteration reuses the **original image** (results are never chained) and picks a fresh random pose/angle/action combo (repeating combos within a batch are avoided when possible).
+- Generations run sequentially and relaunch automatically after each result; the batch is cancellable with the inline Cancel button and stops on the first provider error.
+- The `N` in the caption controls how many images to generate. Example: `/variables 3` → 3 independent edits, each with a different random combo.
+
+The lists and the prompt template are managed with `/listas` (Telegram admin panel, private chats only): add / edit / delete items per list and customize the template with the `{pose}`, `{angle}`, `{action}` placeholders. Lists persist in `variables_lists.json`.
+
 ## Environment variables
 
 | Variable | Required | Description |
@@ -36,6 +47,7 @@ Use `/config` (or `/video`) to change the model (`grok-imagine-video` base or `g
 | `XAI_API_KEY` | Yes | xAI API key |
 | `KIE_API_KEY` | No | Kie.ai API key (required when using Kie.ai provider via `/config` or `/imaginess`) |
 | `ALLOWED_TELEGRAM_IDS` | Yes (recommended) | Comma-separated user IDs; only these users can use the bot (enforced on all messages and callbacks) |
+| `VARIABLES_ADMIN_IDS` | No | Comma-separated user IDs allowed to edit the `/listas` panel (poses/ángulos/acciones). Defaults to `ALLOWED_TELEGRAM_IDS` when unset, and to everyone when neither is set |
 
 ## Deployment
 

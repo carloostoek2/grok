@@ -20,6 +20,7 @@ import pytest  # noqa: E402
 import bot  # noqa: E402
 import config_flow  # noqa: E402
 import sessions  # noqa: E402
+import variables_store  # noqa: E402
 
 
 def make_fsm_context(*, fsm_state: str | None = None, **data):
@@ -65,6 +66,21 @@ def generation_refs_file(tmp_path, monkeypatch):
     path = tmp_path / "generation_refs.json"
     monkeypatch.setattr(sessions, "GENERATION_REFS_FILE", path)
     return path
+
+
+@pytest.fixture
+def variables_file(tmp_path, monkeypatch):
+    path = tmp_path / "variables_lists.json"
+    monkeypatch.setattr(variables_store, "VARIABLES_FILE", path)
+    return path
+
+
+@pytest.fixture
+def mock_vars_safe_edit(monkeypatch):
+    """Patch safe_edit_text inside the variables admin panel deps dict."""
+    mock = AsyncMock()
+    monkeypatch.setitem(bot._VARS_DEPS, "safe_edit_text", mock)
+    return mock
 
 
 @pytest.fixture
