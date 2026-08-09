@@ -119,6 +119,86 @@ def config_variant_keyboard(deps: dict[str, Any], user_id: int) -> InlineKeyboar
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
+# LoRAs válidos por modelo ComfyUI. Krea 2 y Moody COMPARTEN los mismos LoRAs
+# (menú reutilizado). Wan 2.2: none = "Full" (calidad, 40 pasos), lightx2v = "Rápido".
+COMFYUI_MODEL_LABELS = {
+    "realvisxl": "RealVisXL (SDXL)",
+    "qwen": "Qwen-Image 2512",
+    "krea2": "Krea 2 (Turbo)",
+    "krea2_moody": "Moody (Krea 2 Mix)",
+    "minimax_i2v": "MiniMax H3 (video)",
+}
+COMFYUI_LORA_LABELS = {
+    "none": "Sin LoRA",
+    "pov": "POV",
+    "nudify": "Nudify",
+    "qwen4play": "Qwen4Play (NSFW)",
+    "krea_nsfw": "Krea2 NSFW V4",
+    "krea_snapshot": "Realistic Snapshot",
+    "lightx2v": "Rápido (lightx2v)",
+}
+COMFYUI_LORAS_BY_MODEL = {
+    "realvisxl": ("none", "pov", "nudify"),
+    "qwen": ("none", "qwen4play"),
+    "krea2": ("none", "krea_nsfw", "krea_snapshot"),
+    "krea2_moody": ("none", "krea_nsfw", "krea_snapshot"),
+    "minimax_i2v": ("none",),
+}
+
+
+def _comfyui_lora_label(model: str, key: str) -> str:
+    if model in ("minimax_i2v", "wan_i2v") and key == "none":
+        return "Full (calidad)"
+    return COMFYUI_LORA_LABELS.get(key, key)
+
+
+def config_comfyui_keyboard(deps: dict[str, Any], user_id: int) -> InlineKeyboardMarkup:
+    get_comfyui_config = deps["get_comfyui_config"]
+    cfg = get_comfyui_config(user_id)
+    model_labels = COMFYUI_MODEL_LABELS
+    rows = []
+    for k in ("realvisxl", "qwen", "krea2", "krea2_moody", "minimax_i2v"):
+        mark = "✅ " if k == cfg["model"] else "• "
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{mark}{model_labels.get(k, k)}",
+                    callback_data=f"cfg:comfyui:model:{k}",
+                )
+            ]
+        )
+    for k in COMFYUI_LORAS_BY_MODEL.get(cfg["model"], ("none",)):
+        mark = "✅ " if k == cfg["lora"] else "• "
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{mark}{_comfyui_lora_label(cfg['model'], k)}",
+                    callback_data=f"cfg:comfyui:lora:{k}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="← Modelo", callback_data="cfg:back:model")])
+    rows.append([InlineKeyboardButton(text="Cerrar", callback_data="cfg:close")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _comfyui_screen_text(deps: dict[str, Any], user_id: int, *, updated: bool = False) -> str:
+    cfg = deps["get_comfyui_config"](user_id)
+    header = "Configuración actualizada ✅\n" if updated else "Configuración de ComfyUI (GPU propia):\n"
+    model_label = COMFYUI_MODEL_LABELS.get(cfg["model"], cfg["model"])
+    lora_label = _comfyui_lora_label(cfg["model"], cfg["lora"])
+    if cfg["model"] in ("minimax_i2v", "wan_i2v"):
+        hint = "\nVideo: envía una foto + prompt (o responde a una foto) para generar el video."
+    else:
+        hint = ""
+    return (
+        f"{header}"
+        f"<b>Modelo:</b> {model_label}\n"
+        f"<b>LoRA:</b> {lora_label}\n\n"
+        f"Elige el modelo y el LoRA:{hint}"
+    )
+
+
 def config_video_keyboard(deps: dict[str, Any], current: dict, user_id: int) -> InlineKeyboardMarkup:
     get_video_provider_for_user = deps["get_video_provider_for_user"]
     _kie_aspect_ratios_for_model = deps["_kie_aspect_ratios_for_model"]
@@ -376,6 +456,15 @@ async def _show_configure_screen(
             ),
             parse_mode="HTML",
             reply_markup=config_video_keyboard(deps, cfg, user_id),
+        )
+        return
+
+    if model_key == "comfyui":
+        await safe_edit_text(
+            target,
+            _comfyui_screen_text(deps, user_id, updated=updated),
+            parse_mode="HTML",
+            reply_markup=config_comfyui_keyboard(deps, user_id),
         )
         return
 
@@ -742,6 +831,61 @@ async def handle_cfg_video(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer(answer)
 
 
+async def handle_cfg_comfyui(callback: types.CallbackQuery, state: FSMContext):
+    """cfg:comfyui:model:<key> | cfg:comfyui:lora:<value>"""
+    if await _reject_non_private_callback(callback):
+        return
+    deps = _deps()
+    get_comfyui_config = deps["get_comfyui_config"]
+    set_comfyui_config = deps["set_comfyui_config"]
+    valid_models = deps.get("VALID_COMFYUI_MODELS", ())
+    valid_loras = deps.get("VALID_COMFYUI_LORAS", ())
+
+    if await _reject_stale_callback(
+        callback,
+        state,
+        allowed_states=(ConfigStates.configure,),
+        required_config_models=("comfyui",),
+    ):
+        return
+
+    parts = callback.data.split(":")
+    if len(parts) != 4 or parts[2] not in ("model", "lora"):
+        await callback.answer("Opción inválida.", show_alert=True)
+        return
+
+    kind, value = parts[2], parts[3]
+    if kind == "model" and value not in valid_models:
+        await callback.answer("Modelo no disponible.", show_alert=True)
+        return
+    if kind == "lora" and value not in valid_loras:
+        await callback.answer("LoRA no disponible.", show_alert=True)
+        return
+
+    uid = callback.from_user.id
+    prior = get_comfyui_config(uid)
+    current = prior[kind]
+    if value == current:
+        await callback.answer("Ya está activa esa opción.")
+        return
+
+    kwargs = {kind: value}
+    set_comfyui_config(uid, **kwargs)
+    cfg = get_comfyui_config(uid)
+    _activate_model(deps, uid, "comfyui")
+
+    await _show_configure_screen(
+        callback.message,
+        state,
+        deps,
+        uid,
+        "comfyui",
+        updated=True,
+    )
+    label = value if kind == "lora" else cfg["model"]
+    await callback.answer(f"ComfyUI {kind}: {label}")
+
+
 async def handle_cfg_back_model(callback: types.CallbackQuery, state: FSMContext):
     if await _reject_non_private_callback(callback):
         return
@@ -822,5 +966,6 @@ def register_config_handlers(dp: Dispatcher, deps: dict[str, Any]) -> None:
     dp.callback_query.register(handle_cfg_close, lambda c: c.data == "cfg:close")
     dp.callback_query.register(handle_cfg_model, lambda c: c.data and c.data.startswith("cfg:model:"))
     dp.callback_query.register(handle_cfg_provider, lambda c: c.data and c.data.startswith("cfg:provider:"))
+    dp.callback_query.register(handle_cfg_comfyui, lambda c: c.data and c.data.startswith("cfg:comfyui:"))
     dp.callback_query.register(handle_cfg_variant, lambda c: c.data and c.data.startswith("cfg:variant:"))
     dp.callback_query.register(handle_cfg_video, lambda c: c.data and c.data.startswith("cfg:video:"))

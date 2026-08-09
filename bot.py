@@ -7,9 +7,11 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import time
 import urllib.parse
+import uuid
 from io import BytesIO
 from pathlib import Path
 
@@ -41,6 +43,10 @@ REPLICATE_TOKEN = os.environ["REPLICATE_API_TOKEN"]
 XAI_API_KEY = os.environ["XAI_API_KEY"]
 KIE_API_KEY = os.environ.get("KIE_API_KEY", "")
 os.environ["REPLICATE_API_TOKEN"] = REPLICATE_TOKEN
+
+# ComfyUI provider — SSH target (Vast box). Host/port change per instance.
+COMFYUI_HOST = os.environ.get("COMFYUI_HOST", "")
+COMFYUI_PORT = os.environ.get("COMFYUI_PORT", "22")
 
 
 def _parse_allowed_telegram_ids() -> set[int] | None:
@@ -105,6 +111,13 @@ MODELS = {
         "name": "Grok Imagine Video",
         "desc": "Generación de video con xAI Grok Imagine",
         "provider": "xai",
+    },
+    "comfyui": {
+        "key": "comfyui",
+        "id": "comfyui",
+        "name": "ComfyUI (GPU propia)",
+        "desc": "Generación/edición con ComfyUI en la GPU de Vast: Krea 2 / Moody (imagen) y Wan 2.2 (video)",
+        "provider": "comfyui",
     },
 }
 
@@ -586,6 +599,8 @@ def _model_from_regen(regen: dict) -> dict:
         prov = regen.get("imagine_provider", sessions.DEFAULT_GROK_IMAGINE_PROVIDER)
         var = regen.get("imagine_variant", sessions.DEFAULT_GROK_IMAGINE_VARIANT)
         return _grok_model_for_config(regen["user_id"], prov, var)
+    if key == "comfyui":
+        return get_model(regen["user_id"])
     return MODELS.get(key, MODELS[DEFAULT_MODEL])
 
 
@@ -719,6 +734,16 @@ def get_model(user_id: int) -> dict:
             m["desc"] = f"Generación de video con Grok Imagine — {prov_label}"
         m["imagine_provider"] = cfg["provider"]
         m["imagine_variant"] = cfg["variant"]
+        return m
+    if key == "comfyui":
+        m = dict(base)
+        cc = sessions.get_comfyui_config(user_id)
+        m["comfyui_model"] = cc["model"]
+        m["comfyui_lora"] = cc["lora"]
+        m["name"] = f"ComfyUI ({cc['model']} • lora {cc['lora']})"
+        m["desc"] = (
+            f"ComfyUI en la GPU — modelo {cc['model']}, LoRA {cc['lora']}"
+        )
         return m
     return base
 
@@ -1128,12 +1153,26 @@ async def handle_regenerate_image(callback: types.CallbackQuery):
             image_data,
             reference_image=reference_image,
             kie_source_ref=kie_source_ref,
+            status_msg=status_msg,
+            status_label=f"Regenerando imagen con {model['name']}...",
         )
         if _job_cancelled(cancel_event):
             await status_msg.edit_text("⏹ Regeneración cancelada.", reply_markup=None)
             return
         if err:
             await status_msg.edit_text(err, reply_markup=None)
+            return
+
+        if model.get("provider") == "comfyui":
+            await _send_comfyui_output(
+                model,
+                output,
+                prompt,
+                status_msg,
+                callback.message,
+                "Edit" if mode == "edit" else "Prompt",
+                regen,
+            )
             return
 
         prefix = "Edit" if mode == "edit" else "Prompt"
@@ -1319,9 +1358,30 @@ async def _do_generate_text(
 
     backend = _prov_label(model.get("provider", "?"))
     try:
-        output, err, kie_meta = await generate_image(model, prompt)
+        output, err, kie_meta = await generate_image(
+            model,
+            prompt,
+            status_msg=status_msg,
+            status_label=f"Generando imagen con {model['name']}...",
+        )
         if err:
             await status_msg.edit_text(err)
+            return
+        if model.get("provider") == "comfyui":
+            await _send_comfyui_output(
+                model,
+                output,
+                prompt,
+                status_msg,
+                message,
+                "Prompt",
+                _build_image_regen_context(
+                    model=model,
+                    user_id=uid,
+                    prompt=prompt,
+                    mode="text",
+                ),
+            )
             return
         await process_image_result(
             output,
@@ -1454,6 +1514,8 @@ async def _process_single_photo_edit(
             prompt,
             image_data,
             reference_image=reference_image,
+            status_msg=status_msg,
+            status_label=status_label,
         )
         if _job_cancelled(cancel_event):
             await status_msg.edit_text("⏹ Edición cancelada.", reply_markup=None)
@@ -1461,6 +1523,23 @@ async def _process_single_photo_edit(
         if err:
             await status_msg.edit_text(err, reply_markup=None)
             return False
+        if model.get("provider") == "comfyui":
+            return await _send_comfyui_output(
+                model,
+                output,
+                prompt,
+                status_msg,
+                message,
+                "Edit",
+                _build_image_regen_context(
+                    model=model,
+                    user_id=uid,
+                    prompt=prompt,
+                    mode="edit",
+                    source_file_id=file_id,
+                    integrate_mode=integrate_mode,
+                ),
+            )
         await process_image_result(
             output,
             prompt,
@@ -1542,15 +1621,13 @@ async def _process_album_edit_from_file_ids(
                 return True
 
             if integrate_mode:
-                await status_msg.edit_text(
-                    f"Integrando referencia {i}/{n} imágenes ({backend})...",
-                    reply_markup=_cancel_job_keyboard(),
-                )
+                status_label = f"Integrando referencia {i}/{n} imágenes ({backend})..."
             else:
-                await status_msg.edit_text(
-                    f"Editando {i}/{n} imágenes con {model['name']} ({backend})...",
-                    reply_markup=_cancel_job_keyboard(),
-                )
+                status_label = f"Editando {i}/{n} imágenes con {model['name']} ({backend})..."
+            await status_msg.edit_text(
+                status_label,
+                reply_markup=_cancel_job_keyboard(),
+            )
             image_data = await _download_telegram_file_id(file_id)
             if _job_cancelled(cancel_event):
                 await status_msg.edit_text(
@@ -1563,6 +1640,8 @@ async def _process_album_edit_from_file_ids(
                 prompt,
                 image_data,
                 reference_image=reference_image,
+                status_msg=status_msg,
+                status_label=status_label,
             )
             if _job_cancelled(cancel_event):
                 await status_msg.edit_text(
@@ -1776,8 +1855,11 @@ async def _run_variables_batch(
                     reply_markup=None,
                 )
                 return
+            status_label = (
+                f"🎲 <b>Variables</b>: editando {i}/{count} imágenes con {model['name']}..."
+            )
             await status_msg.edit_text(
-                f"🎲 <b>Variables</b>: editando {i}/{count} imágenes con {model['name']}...",
+                status_label,
                 parse_mode="HTML",
                 reply_markup=_cancel_job_keyboard(),
             )
@@ -1796,6 +1878,9 @@ async def _run_variables_batch(
                 prompt,
                 image_data,
                 kie_source_ref=kie_source_ref,
+                status_msg=status_msg,
+                status_label=status_label,
+                status_parse_mode="HTML",
             )
             if _job_cancelled(cancel_event):
                 await status_msg.edit_text(
@@ -1922,7 +2007,7 @@ async def handle_photo_caption(message: types.Message):
         await _handle_faceswap_photo(message)
         return
 
-    # --- grok / grok_video / seedream: photo + caption → edit or image-to-video ---
+    # --- grok / grok_video / seedream / comfyui: photo + caption → edit ---
     integrate_mode, prompt = _parse_integrate_caption(message.caption)
     if _prompt_needs_long_text_collection(prompt):
         model = get_model(message.from_user.id)
@@ -2051,16 +2136,37 @@ async def handle_reply_edit(message: types.Message):
             )
             return
 
-        status_msg = await message.answer(f"Editando imagen con {model['name']}...")
+        status_label = f"Editando imagen con {model['name']}..."
+        status_msg = await message.answer(status_label)
         backend = _prov_label(model.get("provider", "?"))
         output, err, kie_meta = await generate_image(
             model,
             prompt,
             image_data,
             kie_source_ref=kie_source_ref,
+            status_msg=status_msg,
+            status_label=status_label,
         )
         if err:
             await status_msg.edit_text(err)
+            return
+        if model.get("provider") == "comfyui":
+            src = message.reply_to_message.photo[-1].file_id if message.reply_to_message.photo else None
+            await _send_comfyui_output(
+                model,
+                output,
+                prompt,
+                status_msg,
+                message,
+                "Edit",
+                _build_image_regen_context(
+                    model=model,
+                    user_id=message.from_user.id,
+                    prompt=prompt,
+                    mode="edit",
+                    source_file_id=src,
+                ),
+            )
             return
         source_file_id = None
         if kie_source_ref is None and message.reply_to_message.photo:
@@ -2779,6 +2885,9 @@ async def generate_image(
     *,
     reference_image: BytesIO | None = None,
     kie_source_ref: dict | None = None,
+    status_msg: types.Message | None = None,
+    status_label: str = "",
+    status_parse_mode: str | None = None,
 ) -> tuple[object | None, str | None, dict | None]:
     prov = model.get("provider", "?")
     model_id = model.get("id")
@@ -2793,7 +2902,20 @@ async def generate_image(
         )
         return output, err, None
     if prov == "kie":
-        return await _generate_kie(model, prompt, image_data, kie_source_ref=kie_source_ref)
+        return await _generate_kie(
+            model,
+            prompt,
+            image_data,
+            kie_source_ref=kie_source_ref,
+            status_msg=status_msg,
+            status_label=status_label,
+            status_parse_mode=status_parse_mode,
+        )
+    if prov == "comfyui":
+        path, err = await _generate_comfyui(
+            model, prompt, image_data, status_msg=status_msg
+        )
+        return path, err, None
     output, err = await _generate_replicate(model, prompt, image_data)
     return output, err, None
 
@@ -2816,6 +2938,228 @@ async def _generate_replicate(model: dict, prompt: str, image_data: BytesIO | No
 
     output = await asyncio.to_thread(replicate.run, model_id, input=input_data, **extra_kwargs)
     return output, None
+
+
+# ---------------------------------------------------------------------------
+# ComfyUI provider — generation on the user's Vast GPU box (SSH + native API)
+# ---------------------------------------------------------------------------
+def _comfyui_ssh_base() -> tuple[str, int | None, str | None]:
+    if not COMFYUI_HOST:
+        return "", None, (
+            "ComfyUI no configurado: agrega COMFYUI_HOST y COMFYUI_PORT "
+            "al .env y reinicia el servicio."
+        )
+    try:
+        port = int(COMFYUI_PORT or 22)
+    except ValueError:
+        return "", None, "COMFYUI_PORT inválido en .env."
+    return (
+        f"ssh -p {port} -o BatchMode=yes -o ConnectTimeout=25 root@{COMFYUI_HOST}",
+        port,
+        None,
+    )
+
+
+async def _comfyui_run_remote(cmd: str, prompt: str, *, timeout: int = 600) -> str:
+    """Run gen_comfy.py on the box with the prompt on stdin. Returns output path or ''."""
+    ssh_base, _port, err = _comfyui_ssh_base()
+    if err or not ssh_base:
+        return ""
+    proc = await asyncio.to_thread(
+        subprocess.run,
+        ssh_base.split() + [cmd],
+        input=prompt.encode(),
+        capture_output=True,
+        timeout=timeout,
+    )
+    if proc.returncode != 0:
+        return ""
+    out = (proc.stdout or b"").decode(errors="replace").strip()
+    lines = [l for l in out.splitlines() if l.startswith("/workspace")]
+    return lines[-1] if lines else ""
+
+
+async def _comfyui_pull(remote_path: str) -> str:
+    """scp the generated file to a local temp path. Returns local path or ''."""
+    ssh_base, port, err = _comfyui_ssh_base()
+    if err or not ssh_base:
+        return ""
+    ext = os.path.splitext(remote_path)[1] or ".png"
+    local = f"/tmp/comfyui_{int(time.time())}_{uuid.uuid4().hex[:6]}{ext}"
+    proc = await asyncio.to_thread(
+        subprocess.run,
+        [
+            "scp", "-P", str(port), "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=25", f"root@{COMFYUI_HOST}:{remote_path}", local,
+        ],
+        capture_output=True,
+        timeout=120,
+    )
+    if proc.returncode != 0 or not os.path.exists(local):
+        return ""
+    return local
+
+
+async def _comfyui_upload(image_data: BytesIO) -> str:
+    """Upload a Telegram photo to the box's ComfyUI input dir. Returns remote filename or ''."""
+    ssh_base, port, err = _comfyui_ssh_base()
+    if err or not ssh_base:
+        return ""
+    name = f"edit_{int(time.time())}_{uuid.uuid4().hex[:6]}.png"
+    local = f"/tmp/{name}"
+    with open(local, "wb") as f:
+        image_data.seek(0)
+        f.write(image_data.read())
+    proc = await asyncio.to_thread(
+        subprocess.run,
+        [
+            "scp", "-P", str(port), "-o", "BatchMode=yes",
+            "-o", "ConnectTimeout=25", local,
+            f"root@{COMFYUI_HOST}:/workspace/ComfyUI/input/{name}",
+        ],
+        capture_output=True,
+        timeout=120,
+    )
+    os.remove(local)
+    return name if proc.returncode == 0 else ""
+
+
+async def _generate_comfyui(
+    model: dict,
+    prompt: str,
+    image_data: BytesIO | None = None,
+    *,
+    status_msg: types.Message | None = None,
+) -> tuple[str | None, str | None]:
+    """Generate (txt2img) or edit (img2img) via ComfyUI on the Vast box.
+
+    Returns (local_path, err). The caller sends the local file to Telegram.
+    """
+    _ssh_base, port, err = _comfyui_ssh_base()
+    if err:
+        return None, err
+    cm = model.get("comfyui_model", "realvisxl")
+    cl = model.get("comfyui_lora", "pov")
+    try:
+        if image_data is None:
+            if cm in ("wan_i2v", "minimax_i2v"):
+                return None, (
+                    "El generador de video necesita una foto de entrada:\n"
+                    "envía una foto con el prompt, o responde a una foto con el texto."
+                )
+            cmd = f"MODEL='{cm}' LORA='{cl}' python3 /workspace/gen_comfy.py"
+            remote = await _comfyui_run_remote(cmd, prompt)
+        else:
+            name = await _comfyui_upload(image_data)
+            if not name:
+                return None, "No pude subir la imagen al box de ComfyUI."
+            cmd = (
+                f"MODEL='{cm}' LORA='{cl}' INPUT_IMAGE='{name}' "
+                f"python3 /workspace/gen_comfy.py"
+            )
+            remote = await _comfyui_run_remote(cmd, prompt)
+        if not remote:
+            return None, (
+                "ComfyUI no devolvió imagen. Revisa el box: "
+                f"ssh -p {port} root@{COMFYUI_HOST} 'supervisorctl status comfyui'"
+            )
+        local = await _comfyui_pull(remote)
+        if not local:
+            return None, "No pude descargar la imagen del box."
+        return local, None
+    except Exception as e:
+        return None, f"Error de ComfyUI: {e}"
+
+
+async def _send_comfyui_image(
+    output: object,
+    prompt: str,
+    status_msg: types.Message,
+    message: types.Message,
+    prefix: str,
+    regen_context: dict,
+) -> bool:
+    """Send a ComfyUI local-file result to Telegram directly (bypasses the
+    URL-download machinery in process_image_result, which chokes on local paths)."""
+    try:
+        with open(str(output), "rb") as f:
+            photo = BufferedInputFile(f.read(), filename="comfyui.png")
+    except (OSError, TypeError):
+        await status_msg.edit_text("No se pudo leer la imagen generada.")
+        return False
+    sent_msg = await message.answer_photo(
+        photo,
+        caption=_format_result_caption(prefix, prompt),
+        parse_mode="HTML",
+        reply_markup=_image_regenerate_keyboard(),
+    )
+    sessions.save_generation_ref(
+        message.chat.id,
+        sent_msg.message_id,
+        provider="comfyui",
+        kind="image",
+        prompt=prompt,
+        regen=regen_context,
+    )
+    await status_msg.delete()
+    return True
+
+
+def _comfyui_is_video(model: dict) -> bool:
+    """Los modelos de video (MiniMax H3 / Wan) devuelven MP4; el resto imágenes."""
+    return model.get("comfyui_model") in ("minimax_i2v", "wan_i2v")
+
+
+async def _send_comfyui_video(
+    output: object,
+    prompt: str,
+    status_msg: types.Message,
+    message: types.Message,
+    prefix: str,
+    regen_context: dict,
+) -> bool:
+    """Send a ComfyUI Wan 2.2 MP4 result to Telegram as a video."""
+    try:
+        with open(str(output), "rb") as f:
+            video = BufferedInputFile(f.read(), filename="wan2.mp4")
+    except (OSError, TypeError):
+        await status_msg.edit_text("No se pudo leer el video generado.")
+        return False
+    sent_msg = await message.answer_video(
+        video,
+        caption=_format_result_caption(prefix, prompt),
+        parse_mode="HTML",
+        reply_markup=_image_regenerate_keyboard(),
+    )
+    sessions.save_generation_ref(
+        message.chat.id,
+        sent_msg.message_id,
+        provider="comfyui",
+        kind="video",
+        prompt=prompt,
+        regen=regen_context,
+    )
+    await status_msg.delete()
+    return True
+
+
+async def _send_comfyui_output(
+    model: dict,
+    output: object,
+    prompt: str,
+    status_msg: types.Message,
+    message: types.Message,
+    prefix: str,
+    regen_context: dict,
+) -> bool:
+    """Dispatch: video (Wan 2.2) o imagen (resto de modelos ComfyUI)."""
+    if _comfyui_is_video(model):
+        return await _send_comfyui_video(
+            output, prompt, status_msg, message, prefix, regen_context
+        )
+    return await _send_comfyui_image(
+        output, prompt, status_msg, message, prefix, regen_context
+    )
 
 
 XAI_BASE = "https://api.x.ai/v1"
@@ -3146,12 +3490,35 @@ async def _kie_get_result_url_at_index(
     return result_url, None
 
 
+def _kie_retry_status_text(status_label: str, attempt: int) -> str:
+    """Append the current attempt number to a Kie status message during retries."""
+    return f"{status_label} (intento {attempt + 2}/{GENERATE_MAX_RETRIES + 1})"
+
+
+async def _kie_update_retry_status(
+    status_msg: types.Message | None,
+    status_label: str,
+    status_parse_mode: str | None,
+    attempt: int,
+) -> None:
+    if status_msg is None or not status_label:
+        return
+    await safe_edit_text(
+        status_msg,
+        _kie_retry_status_text(status_label, attempt),
+        parse_mode=status_parse_mode,
+    )
+
+
 async def _generate_kie(
     model: dict,
     prompt: str,
     image_data: BytesIO | None = None,
     *,
     kie_source_ref: dict | None = None,
+    status_msg: types.Message | None = None,
+    status_label: str = "",
+    status_parse_mode: str | None = None,
 ) -> tuple[object | None, str | None, dict | None]:
     if not KIE_API_KEY:
         return None, _KIE_NOT_CONFIGURED_MSG, None
@@ -3199,6 +3566,7 @@ async def _generate_kie(
                     last_err = upload_err
                     if attempt < GENERATE_MAX_RETRIES:
                         print(f"[kie generate] upload attempt {attempt+1} failed, retrying...")
+                        await _kie_update_retry_status(status_msg, status_label, status_parse_mode, attempt)
                         await asyncio.sleep(_retry_backoff(attempt))
                         continue
                     return None, last_err, None
@@ -3224,6 +3592,7 @@ async def _generate_kie(
                 last_err = create_err
                 if attempt < GENERATE_MAX_RETRIES:
                     print(f"[kie generate] create task attempt {attempt+1} failed, retrying...")
+                    await _kie_update_retry_status(status_msg, status_label, status_parse_mode, attempt)
                     await asyncio.sleep(_retry_backoff(attempt))
                     continue
                 return None, last_err, None
@@ -3233,6 +3602,7 @@ async def _generate_kie(
                 last_err = poll_err
                 if attempt < GENERATE_MAX_RETRIES:
                     print(f"[kie generate] poll attempt {attempt+1} failed ({poll_err}), retrying...")
+                    await _kie_update_retry_status(status_msg, status_label, status_parse_mode, attempt)
                     await asyncio.sleep(_retry_backoff(attempt))
                     continue
                 return None, last_err, None
@@ -3704,6 +4074,10 @@ _CONFIG_DEPS = {
         "safe_edit_text": safe_edit_text,
         "GROK_IMAGINE_VARIANTS": GROK_IMAGINE_VARIANTS,
         "get_video_provider_for_user": get_video_provider_for_user,
+        "get_comfyui_config": sessions.get_comfyui_config,
+        "set_comfyui_config": sessions.set_comfyui_config,
+        "VALID_COMFYUI_MODELS": sessions.VALID_COMFYUI_MODELS,
+        "VALID_COMFYUI_LORAS": sessions.VALID_COMFYUI_LORAS,
         "_maybe_reset_kie_aspect_ratio": _maybe_reset_kie_aspect_ratio,
         "_kie_aspect_ratios_for_model": _kie_aspect_ratios_for_model,
         "_video_config_summary": _video_config_summary,

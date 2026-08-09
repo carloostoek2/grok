@@ -21,7 +21,11 @@ DEFAULT_GROK_IMAGINE_VARIANT = "quality"
 DEFAULT_IMAGE_ASPECT_RATIO = "9:16"
 VALID_GROK_IMAGINE_PROVIDERS = ("xai", "replicate", "kie")
 VALID_GROK_IMAGINE_VARIANTS = ("standard", "quality")
-VALID_MODELS = ("grok", "seedream", "faceswap", "grok_video")
+VALID_MODELS = ("grok", "seedream", "faceswap", "grok_video", "comfyui")
+DEFAULT_COMFYUI_MODEL = "realvisxl"
+DEFAULT_COMFYUI_LORA = "pov"
+VALID_COMFYUI_MODELS = ("realvisxl", "qwen", "krea2", "krea2_moody", "minimax_i2v")
+VALID_COMFYUI_LORAS = ("none", "pov", "nudify", "qwen4play", "krea_nsfw", "krea_snapshot", "lightx2v")
 DEFAULT_VIDEO_DURATION = 5
 DEFAULT_VIDEO_ASPECT_RATIO = "16:9"
 DEFAULT_VIDEO_RESOLUTION = "720p"
@@ -47,6 +51,8 @@ def _default_session_record(**overrides) -> dict:
         "model": DEFAULT_MODEL,
         "grok_imagine_provider": DEFAULT_GROK_IMAGINE_PROVIDER,
         "grok_imagine_variant": DEFAULT_GROK_IMAGINE_VARIANT,
+        "comfyui_model": DEFAULT_COMFYUI_MODEL,
+        "comfyui_lora": DEFAULT_COMFYUI_LORA,
         "video_duration": DEFAULT_VIDEO_DURATION,
         "video_aspect_ratio": DEFAULT_VIDEO_ASPECT_RATIO,
         "video_resolution": DEFAULT_VIDEO_RESOLUTION,
@@ -109,6 +115,12 @@ def _ensure_full(rec: dict) -> bool:
         changed = True
     if "video_mode" not in rec:
         rec["video_mode"] = DEFAULT_VIDEO_MODE
+        changed = True
+    if "comfyui_model" not in rec:
+        rec["comfyui_model"] = DEFAULT_COMFYUI_MODEL
+        changed = True
+    if "comfyui_lora" not in rec:
+        rec["comfyui_lora"] = DEFAULT_COMFYUI_LORA
         changed = True
     if "integrate_ref_path" not in rec:
         rec["integrate_ref_path"] = None
@@ -360,6 +372,36 @@ def set_grok_imagine_config(user_id: int, provider: str, variant: str) -> None:
         _ensure_full(rec)
         rec["grok_imagine_provider"] = provider
         rec["grok_imagine_variant"] = variant
+    _save(sessions)
+
+
+def get_comfyui_config(user_id: int) -> dict:
+    """Effective ComfyUI config: (model variant, lora)."""
+    rec = get_session(user_id)
+    return {
+        "model": rec.get("comfyui_model", DEFAULT_COMFYUI_MODEL),
+        "lora": rec.get("comfyui_lora", DEFAULT_COMFYUI_LORA),
+    }
+
+
+def set_comfyui_config(
+    user_id: int, *, model: str | None = None, lora: str | None = None
+) -> None:
+    """Persist ComfyUI model variant and/or LoRA via the /config FSM."""
+    if model is not None and model not in VALID_COMFYUI_MODELS:
+        model = DEFAULT_COMFYUI_MODEL
+    if lora is not None and lora not in VALID_COMFYUI_LORAS:
+        lora = DEFAULT_COMFYUI_LORA
+    uid = str(user_id)
+    sessions = _load()
+    if uid not in sessions:
+        sessions[uid] = _default_session_record()
+    rec = sessions[uid]
+    _ensure_full(rec)
+    if model is not None:
+        rec["comfyui_model"] = model
+    if lora is not None:
+        rec["comfyui_lora"] = lora
     _save(sessions)
 
 

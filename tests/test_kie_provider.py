@@ -827,6 +827,28 @@ async def test_kie_create_task_missing_task_id(no_sleep):
 
 
 @pytest.mark.asyncio
+async def test_kie_retry_updates_status_with_attempt(no_sleep):
+    status_msg = MagicMock()
+    model = {"key": "grok", "provider": "kie", "id": "grok-imagine/text-to-image", "imagine_variant": "standard"}
+    with aioresponses() as mocked:
+        mocked.post(KIE_CREATE_URL, status=500, body="boom")
+        mocked.post(KIE_CREATE_URL, payload={"code": 200, "data": {"taskId": "task-abc"}})
+        mocked.get(KIE_POLL_URL, payload=_kie_success_poll_payload())
+        with patch.object(bot, "safe_edit_text", new_callable=AsyncMock) as safe_edit:
+            output, err, meta = await bot._generate_kie(
+                model,
+                "prompt",
+                status_msg=status_msg,
+                status_label="Editando imagen con Kie...",
+            )
+    assert output == [RESULT_URL]
+    assert err is None
+    assert safe_edit.await_count == 1
+    call_text = safe_edit.await_args_list[0].args[1]
+    assert "intento 2/6" in call_text
+
+
+@pytest.mark.asyncio
 async def test_kie_poll_5xx_then_success(no_sleep):
     model = {"key": "grok", "provider": "kie", "id": "grok-imagine/text-to-image", "imagine_variant": "standard"}
     with aioresponses() as mocked:
