@@ -300,7 +300,69 @@ def _validate_prompt(prompt: str, *, max_len: int = TELEGRAM_MAX_TEXT_LEN) -> st
     return None
 
 
-def _format_result_caption(prefix: str, prompt: str, variant: str | None = None) -> str:
+COMFYUI_CAPTION_MODEL_LABELS = {
+    "realvisxl": "RealVisXL",
+    "qwen": "Qwen-Image 2512",
+    "krea2": "Krea 2",
+    "krea2_moody": "Moody (Krea 2 Mix)",
+    "minimax_i2v": "MiniMax H3",
+    "wan_i2v": "Wan 2.2",
+}
+COMFYUI_CAPTION_LORA_LABELS = {
+    "none": "Sin LoRA",
+    "pov": "POV",
+    "nudify": "Nudify",
+    "qwen4play": "Qwen4Play (NSFW)",
+    "krea_nsfw": "NSFW V4",
+    "krea_snapshot": "Realistic Snapshot",
+    "lightx2v": "lightx2v (rápido)",
+}
+
+
+def _truncate_prompt_short(prompt: str, max_lines: int = 3, max_chars: int = 150) -> str:
+    """Primeras 2-3 líneas del prompt (máx ~150 chars), con … si se corta."""
+    lines = [ln.strip() for ln in prompt.splitlines() if ln.strip()]
+    if not lines:
+        return "…"
+    parts, used = [], 0
+    for ln in lines:
+        if used >= max_chars or len(parts) >= max_lines:
+            break
+        piece = ln[: max_chars - used]
+        parts.append(piece)
+        used += len(piece)
+    text = " ".join(parts).strip()
+    if len(text) < len(" ".join(lines)):
+        text = text.rstrip() + "…"
+    return _escape_prompt(text)
+
+
+def _format_model_caption(model: dict, prompt: str) -> str:
+    """Caption con Modelo / LoRA (ComfyUI) / Prompt truncado a 2-3 líneas."""
+    cm = model.get("comfyui_model")
+    if cm:
+        mlabel = COMFYUI_CAPTION_MODEL_LABELS.get(cm, cm) or "?"
+        cl = model.get("comfyui_lora")
+        llabel = COMFYUI_CAPTION_LORA_LABELS.get(cl, cl) or "Sin LoRA"
+        body = (
+            f"<b>Modelo:</b> {_escape_prompt(mlabel)}\n"
+            f"<b>LoRA:</b> {_escape_prompt(llabel)}\n"
+            f"<b>Prompt:</b> "
+        )
+    else:
+        mlabel = model.get("name", "?")
+        body = f"<b>Modelo:</b> {_escape_prompt(mlabel)}\n<b>Prompt:</b> "
+    return body + _truncate_prompt_short(prompt)
+
+
+def _format_result_caption(
+    prefix: str,
+    prompt: str,
+    variant: str | None = None,
+    model: dict | None = None,
+) -> str:
+    if model is not None:
+        return _format_model_caption(model, prompt)
     header = f"<b>{prefix} ({variant}):</b> " if variant else f"<b>{prefix}:</b> "
     ellipsis = "…"
     max_len = TELEGRAM_MAX_CAPTION_LEN
@@ -1185,6 +1247,7 @@ async def handle_regenerate_image(callback: types.CallbackQuery):
             download_allowlist=_download_allowlist_for_provider(model.get("provider")),
             kie_meta=kie_meta,
             regen_context=regen,
+            model=model,
         )
     except replicate.exceptions.ReplicateError as e:
         backend = _prov_label(model.get("provider", "?"))
@@ -1397,6 +1460,7 @@ async def _do_generate_text(
                 prompt=prompt,
                 mode="text",
             ),
+            model=model,
         )
     except replicate.exceptions.ReplicateError as e:
         await status_msg.edit_text(f"Error de {backend}: {e}")
@@ -1556,6 +1620,7 @@ async def _process_single_photo_edit(
                 source_file_id=file_id,
                 integrate_mode=integrate_mode,
             ),
+            model=model,
         )
         return True
     except replicate.exceptions.ReplicateError as e:
@@ -1672,6 +1737,7 @@ async def _process_album_edit_from_file_ids(
                     source_file_id=file_id,
                     integrate_mode=integrate_mode,
                 ),
+                model=model,
             )
             completed += 1
         else:
@@ -1911,6 +1977,7 @@ async def _run_variables_batch(
                     kie_source_ref=kie_source_ref,
                 ),
                 delete_status=False,
+                model=model,
             )
             completed = i
 
@@ -2187,6 +2254,7 @@ async def handle_reply_edit(message: types.Message):
                 source_file_id=source_file_id,
                 kie_source_ref=kie_source_ref,
             ),
+            model=model,
         )
     except replicate.exceptions.ReplicateError as e:
         backend = _prov_label(model.get("provider", "?"))
@@ -3088,6 +3156,7 @@ async def _send_comfyui_image(
     message: types.Message,
     prefix: str,
     regen_context: dict,
+    model: dict | None = None,
 ) -> bool:
     """Send a ComfyUI local-file result to Telegram directly (bypasses the
     URL-download machinery in process_image_result, which chokes on local paths)."""
@@ -3099,7 +3168,7 @@ async def _send_comfyui_image(
         return False
     sent_msg = await message.answer_photo(
         photo,
-        caption=_format_result_caption(prefix, prompt),
+        caption=_format_result_caption(prefix, prompt, model=model),
         parse_mode="HTML",
         reply_markup=_image_regenerate_keyboard(),
     )
@@ -3127,8 +3196,9 @@ async def _send_comfyui_video(
     message: types.Message,
     prefix: str,
     regen_context: dict,
+    model: dict | None = None,
 ) -> bool:
-    """Send a ComfyUI Wan 2.2 MP4 result to Telegram as a video."""
+    """Send a ComfyUI Wan/MiniMax MP4 result to Telegram as a video."""
     try:
         with open(str(output), "rb") as f:
             video = BufferedInputFile(f.read(), filename="wan2.mp4")
@@ -3137,7 +3207,7 @@ async def _send_comfyui_video(
         return False
     sent_msg = await message.answer_video(
         video,
-        caption=_format_result_caption(prefix, prompt),
+        caption=_format_result_caption(prefix, prompt, model=model),
         parse_mode="HTML",
         reply_markup=_image_regenerate_keyboard(),
     )
@@ -3162,13 +3232,13 @@ async def _send_comfyui_output(
     prefix: str,
     regen_context: dict,
 ) -> bool:
-    """Dispatch: video (Wan 2.2) o imagen (resto de modelos ComfyUI)."""
+    """Dispatch: video (MiniMax/Wan) o imagen (resto de modelos ComfyUI)."""
     if _comfyui_is_video(model):
         return await _send_comfyui_video(
-            output, prompt, status_msg, message, prefix, regen_context
+            output, prompt, status_msg, message, prefix, regen_context, model=model
         )
     return await _send_comfyui_image(
-        output, prompt, status_msg, message, prefix, regen_context
+        output, prompt, status_msg, message, prefix, regen_context, model=model
     )
 
 
@@ -3645,6 +3715,7 @@ async def process_image_result(
     kie_meta: dict | None = None,
     regen_context: dict | None = None,
     delete_status: bool = True,
+    model: dict | None = None,
 ):
     if output is None:
         await status_msg.edit_text("Error: el modelo no devolvio nada. Intenta con otro prompt.")
@@ -3669,7 +3740,7 @@ async def process_image_result(
         photo = BufferedInputFile(image_bytes, filename="generated.png")
         sent_msg = await message.answer_photo(
             photo,
-            caption=_format_result_caption(prefix, prompt),
+            caption=_format_result_caption(prefix, prompt, model=model),
             parse_mode="HTML",
             reply_markup=_image_regenerate_keyboard(),
         )
@@ -3696,7 +3767,7 @@ async def process_image_result(
         photo = BufferedInputFile(image_bytes, filename="generated.png")
         sent_msg = await message.answer_photo(
             photo,
-            caption=_format_result_caption(prefix, prompt, variant=f"{i + 1}/{total}"),
+            caption=_format_result_caption(prefix, prompt, variant=f"{i + 1}/{total}", model=model),
             parse_mode="HTML",
             reply_markup=_image_regenerate_keyboard(),
         )
