@@ -126,6 +126,7 @@ COMFYUI_MODEL_LABELS = {
     "qwen": "Qwen-Image 2512",
     "krea2": "Krea 2 (Turbo)",
     "krea2_moody": "Moody (Krea 2 Mix)",
+    "wan_i2v": "Wan 2.2 (video)",
     "minimax_i2v": "MiniMax H3 (video)",
 }
 COMFYUI_LORA_LABELS = {
@@ -142,12 +143,18 @@ COMFYUI_LORAS_BY_MODEL = {
     "qwen": ("none", "qwen4play"),
     "krea2": ("none", "krea_nsfw", "krea_snapshot"),
     "krea2_moody": ("none", "krea_nsfw", "krea_snapshot"),
+    "wan_i2v": ("none", "lightx2v"),
     "minimax_i2v": ("none",),
 }
 
 
 def _comfyui_lora_label(model: str, key: str) -> str:
-    if model in ("minimax_i2v", "wan_i2v") and key == "none":
+    if model == "wan_i2v":
+        if key == "none":
+            return "Full (calidad, 40 pasos)"
+        if key == "lightx2v":
+            return "Rápido (lightx2v, 4×)"
+    if model == "minimax_i2v" and key == "none":
         return "Full (calidad)"
     return COMFYUI_LORA_LABELS.get(key, key)
 
@@ -157,7 +164,7 @@ def config_comfyui_keyboard(deps: dict[str, Any], user_id: int) -> InlineKeyboar
     cfg = get_comfyui_config(user_id)
     model_labels = COMFYUI_MODEL_LABELS
     rows = []
-    for k in ("realvisxl", "qwen", "krea2", "krea2_moody", "minimax_i2v"):
+    for k in ("realvisxl", "qwen", "krea2", "krea2_moody", "wan_i2v", "minimax_i2v"):
         mark = "✅ " if k == cfg["model"] else "• "
         rows.append(
             [
