@@ -1310,6 +1310,7 @@ async def test_process_image_result_saves_generation_ref(generation_refs_file):
     status_msg.delete = AsyncMock()
     message = MagicMock()
     message.chat.id = 200
+    message.message_id = 42
     sent = MagicMock()
     sent.message_id = 99
     message.answer_photo = AsyncMock(return_value=sent)
@@ -1337,6 +1338,8 @@ async def test_process_image_result_saves_generation_ref(generation_refs_file):
     assert ref["regen"]["mode"] == "text"
     kwargs = message.answer_photo.await_args.kwargs
     assert kwargs["reply_markup"].inline_keyboard[0][0].callback_data == "regen"
+    assert kwargs["reply_to_message_id"] == 42
+    assert kwargs["allow_sending_without_reply"] is True
 
 
 @pytest.mark.asyncio
@@ -1380,6 +1383,7 @@ async def test_process_image_result_sends_individual_photos_for_variants(generat
     status_msg.delete = AsyncMock()
     message = MagicMock()
     message.chat.id = 300
+    message.message_id = 77
     sent_1 = MagicMock()
     sent_1.message_id = 50
     sent_2 = MagicMock()
@@ -1411,6 +1415,8 @@ async def test_process_image_result_sends_individual_photos_for_variants(generat
     assert "Prompt (2/2)" in calls[1].kwargs["caption"]
     for call in calls:
         assert call.kwargs["reply_markup"].inline_keyboard[0][0].callback_data == "regen"
+        assert call.kwargs["reply_to_message_id"] == 77
+        assert call.kwargs["allow_sending_without_reply"] is True
     ref_1 = sessions.get_generation_ref(300, 50)
     ref_2 = sessions.get_generation_ref(300, 51)
     assert ref_1["kie_task_id"] == "task-variants"

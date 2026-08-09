@@ -3171,6 +3171,8 @@ async def _send_comfyui_image(
         caption=_format_result_caption(prefix, prompt, model=model),
         parse_mode="HTML",
         reply_markup=_image_regenerate_keyboard(),
+        reply_to_message_id=message.message_id,
+        allow_sending_without_reply=True,
     )
     sessions.save_generation_ref(
         message.chat.id,
@@ -3743,6 +3745,8 @@ async def process_image_result(
             caption=_format_result_caption(prefix, prompt, model=model),
             parse_mode="HTML",
             reply_markup=_image_regenerate_keyboard(),
+            reply_to_message_id=message.message_id,
+            allow_sending_without_reply=True,
         )
         sessions.save_generation_ref(
             message.chat.id,
@@ -3770,6 +3774,8 @@ async def process_image_result(
             caption=_format_result_caption(prefix, prompt, variant=f"{i + 1}/{total}", model=model),
             parse_mode="HTML",
             reply_markup=_image_regenerate_keyboard(),
+            reply_to_message_id=message.message_id,
+            allow_sending_without_reply=True,
         )
         sessions.save_generation_ref(
             message.chat.id,
