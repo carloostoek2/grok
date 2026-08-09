@@ -2979,13 +2979,23 @@ async def _comfyui_run_remote(cmd: str, prompt: str, *, timeout: int = 600) -> s
     return lines[-1] if lines else ""
 
 
+def _comfyui_tmpdir() -> str:
+    """Directorio local para pulls/uploads de ComfyUI — fuera de /tmp (tmpfs con
+    cuota en este servidor: EDQUOT rompía el scp de vuelta)."""
+    d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tmp", "comfyui")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
 async def _comfyui_pull(remote_path: str) -> str:
     """scp the generated file to a local temp path. Returns local path or ''."""
     ssh_base, port, err = _comfyui_ssh_base()
     if err or not ssh_base:
         return ""
     ext = os.path.splitext(remote_path)[1] or ".png"
-    local = f"/tmp/comfyui_{int(time.time())}_{uuid.uuid4().hex[:6]}{ext}"
+    local = os.path.join(
+        _comfyui_tmpdir(), f"comfyui_{int(time.time())}_{uuid.uuid4().hex[:6]}{ext}"
+    )
     proc = await asyncio.to_thread(
         subprocess.run,
         [
@@ -3006,7 +3016,7 @@ async def _comfyui_upload(image_data: BytesIO) -> str:
     if err or not ssh_base:
         return ""
     name = f"edit_{int(time.time())}_{uuid.uuid4().hex[:6]}.png"
-    local = f"/tmp/{name}"
+    local = os.path.join(_comfyui_tmpdir(), name)
     with open(local, "wb") as f:
         image_data.seek(0)
         f.write(image_data.read())
