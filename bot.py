@@ -301,8 +301,7 @@ def _validate_prompt(prompt: str, *, max_len: int = TELEGRAM_MAX_TEXT_LEN) -> st
 
 
 COMFYUI_CAPTION_MODEL_LABELS = {
-    "realvisxl": "RealVisXL",
-    "qwen": "Qwen-Image 2512",
+    "qwen": "Qwen-Image-Edit 2511",
     "krea2": "Krea 2",
     "krea2_moody": "Moody (Krea 2 Mix)",
     "minimax_i2v": "MiniMax H3",
@@ -310,11 +309,10 @@ COMFYUI_CAPTION_MODEL_LABELS = {
 }
 COMFYUI_CAPTION_LORA_LABELS = {
     "none": "Sin LoRA",
-    "pov": "POV",
-    "nudify": "Nudify",
-    "qwen4play": "Qwen4Play (NSFW)",
+    "lightning": "Lightning 4 pasos",
     "krea_nsfw": "NSFW V4",
     "krea_snapshot": "Realistic Snapshot",
+    "krea_both": "NSFW V4 + Realistic Snapshot",
     "lightx2v": "lightx2v (rápido)",
 }
 
@@ -3116,8 +3114,8 @@ async def _generate_comfyui(
     _ssh_base, port, err = _comfyui_ssh_base()
     if err:
         return None, err
-    cm = model.get("comfyui_model", "realvisxl")
-    cl = model.get("comfyui_lora", "pov")
+    cm = model.get("comfyui_model", "krea2")
+    cl = model.get("comfyui_lora", "none")
     try:
         if image_data is None:
             if cm in ("wan_i2v", "minimax_i2v"):

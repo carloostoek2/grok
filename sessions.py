@@ -22,10 +22,10 @@ DEFAULT_IMAGE_ASPECT_RATIO = "9:16"
 VALID_GROK_IMAGINE_PROVIDERS = ("xai", "replicate", "kie")
 VALID_GROK_IMAGINE_VARIANTS = ("standard", "quality")
 VALID_MODELS = ("grok", "seedream", "faceswap", "grok_video", "comfyui")
-DEFAULT_COMFYUI_MODEL = "realvisxl"
-DEFAULT_COMFYUI_LORA = "pov"
-VALID_COMFYUI_MODELS = ("realvisxl", "qwen", "krea2", "krea2_moody", "wan_i2v", "minimax_i2v")
-VALID_COMFYUI_LORAS = ("none", "pov", "nudify", "qwen4play", "krea_nsfw", "krea_snapshot", "lightx2v")
+DEFAULT_COMFYUI_MODEL = "krea2"
+DEFAULT_COMFYUI_LORA = "none"
+VALID_COMFYUI_MODELS = ("qwen", "krea2", "krea2_moody", "wan_i2v", "minimax_i2v")
+VALID_COMFYUI_LORAS = ("none", "lightning", "krea_nsfw", "krea_snapshot", "krea_both", "lightx2v")
 DEFAULT_VIDEO_DURATION = 5
 DEFAULT_VIDEO_ASPECT_RATIO = "16:9"
 DEFAULT_VIDEO_RESOLUTION = "720p"
@@ -376,11 +376,14 @@ def set_grok_imagine_config(user_id: int, provider: str, variant: str) -> None:
 
 
 def get_comfyui_config(user_id: int) -> dict:
-    """Effective ComfyUI config: (model variant, lora)."""
+    """Effective ComfyUI config: (model variant, lora). Normaliza valores
+    obsoletos (ej. realvisxl retirado) al default."""
     rec = get_session(user_id)
+    cm = rec.get("comfyui_model", DEFAULT_COMFYUI_MODEL)
+    cl = rec.get("comfyui_lora", DEFAULT_COMFYUI_LORA)
     return {
-        "model": rec.get("comfyui_model", DEFAULT_COMFYUI_MODEL),
-        "lora": rec.get("comfyui_lora", DEFAULT_COMFYUI_LORA),
+        "model": cm if cm in VALID_COMFYUI_MODELS else DEFAULT_COMFYUI_MODEL,
+        "lora": cl if cl in VALID_COMFYUI_LORAS else DEFAULT_COMFYUI_LORA,
     }
 
 

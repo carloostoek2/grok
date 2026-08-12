@@ -122,8 +122,7 @@ def config_variant_keyboard(deps: dict[str, Any], user_id: int) -> InlineKeyboar
 # LoRAs válidos por modelo ComfyUI. Krea 2 y Moody COMPARTEN los mismos LoRAs
 # (menú reutilizado). Wan 2.2: none = "Full" (calidad, 40 pasos), lightx2v = "Rápido".
 COMFYUI_MODEL_LABELS = {
-    "realvisxl": "RealVisXL (SDXL)",
-    "qwen": "Qwen-Image 2512",
+    "qwen": "Qwen-Image-Edit 2511",
     "krea2": "Krea 2 (Turbo)",
     "krea2_moody": "Moody (Krea 2 Mix)",
     "wan_i2v": "Wan 2.2 (video)",
@@ -131,18 +130,16 @@ COMFYUI_MODEL_LABELS = {
 }
 COMFYUI_LORA_LABELS = {
     "none": "Sin LoRA",
-    "pov": "POV",
-    "nudify": "Nudify",
-    "qwen4play": "Qwen4Play (NSFW)",
+    "lightning": "Lightning 4 pasos",
     "krea_nsfw": "Krea2 NSFW V4",
     "krea_snapshot": "Realistic Snapshot",
+    "krea_both": "NSFW V4 + Realistic Snapshot",
     "lightx2v": "Rápido (lightx2v)",
 }
 COMFYUI_LORAS_BY_MODEL = {
-    "realvisxl": ("none", "pov", "nudify"),
-    "qwen": ("none", "qwen4play"),
-    "krea2": ("none", "krea_nsfw", "krea_snapshot"),
-    "krea2_moody": ("none", "krea_nsfw", "krea_snapshot"),
+    "qwen": ("none", "lightning"),
+    "krea2": ("none", "krea_nsfw", "krea_snapshot", "krea_both"),
+    "krea2_moody": ("none", "krea_nsfw", "krea_snapshot", "krea_both"),
     "wan_i2v": ("none", "lightx2v"),
     "minimax_i2v": ("none",),
 }
@@ -164,7 +161,7 @@ def config_comfyui_keyboard(deps: dict[str, Any], user_id: int) -> InlineKeyboar
     cfg = get_comfyui_config(user_id)
     model_labels = COMFYUI_MODEL_LABELS
     rows = []
-    for k in ("realvisxl", "qwen", "krea2", "krea2_moody", "wan_i2v", "minimax_i2v"):
+    for k in ("qwen", "krea2", "krea2_moody", "wan_i2v", "minimax_i2v"):
         mark = "✅ " if k == cfg["model"] else "• "
         rows.append(
             [
