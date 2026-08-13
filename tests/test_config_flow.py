@@ -1025,12 +1025,26 @@ async def test_cfg_rejects_non_private_callback(
 
 
 def test_comfyui_krea_edit_lora_options():
-    """Los modos de edición de identidad existen para Krea 2 / Moody y son válidos."""
+    """Los modos de edición de identidad existen para Krea 2 / RAW / Moody y son válidos."""
     from sessions import VALID_COMFYUI_LORAS
 
     edit_keys = ("krea_edit", "krea_edit_nsfw", "krea_edit_snapshot", "krea_edit_both")
-    for model in ("krea2", "krea2_moody"):
+    for model in ("krea2", "krea2_raw", "krea2_moody"):
         for k in edit_keys:
             assert k in config_flow.COMFYUI_LORAS_BY_MODEL[model]
             assert k in config_flow.COMFYUI_LORA_LABELS
             assert k in VALID_COMFYUI_LORAS
+
+
+def test_comfyui_krea2_raw_model_options():
+    """krea2_raw existe como modelo ComfyUI con los mismos LoRAs que krea2."""
+    from sessions import VALID_COMFYUI_MODELS, VALID_COMFYUI_LORAS
+
+    assert "krea2_raw" in VALID_COMFYUI_MODELS
+    assert "krea2_raw" in config_flow.COMFYUI_MODEL_LABELS
+    assert "krea2_raw" in bot.COMFYUI_CAPTION_MODEL_LABELS
+    for k in ("none", "krea_nsfw", "krea_snapshot", "krea_both"):
+        assert k in config_flow.COMFYUI_LORAS_BY_MODEL["krea2_raw"]
+        assert k in VALID_COMFYUI_LORAS
+    # Mismos LoRAs que krea2 (turbo) — el menú debe ser idéntico
+    assert config_flow.COMFYUI_LORAS_BY_MODEL["krea2_raw"] == config_flow.COMFYUI_LORAS_BY_MODEL["krea2"]

@@ -124,6 +124,7 @@ def config_variant_keyboard(deps: dict[str, Any], user_id: int) -> InlineKeyboar
 COMFYUI_MODEL_LABELS = {
     "qwen": "Qwen-Image-Edit 2511",
     "krea2": "Krea 2 (Turbo)",
+    "krea2_raw": "Krea 2 (RAW)",
     "krea2_moody": "Moody (Krea 2 Mix)",
     "wan_i2v": "Wan 2.2 (video)",
 }
@@ -144,6 +145,10 @@ COMFYUI_LORA_LABELS = {
 COMFYUI_LORAS_BY_MODEL = {
     "qwen": ("none", "lightning", "multiangle", "multiangle_batch"),
     "krea2": (
+        "none", "krea_nsfw", "krea_snapshot", "krea_both",
+        "krea_edit", "krea_edit_nsfw", "krea_edit_snapshot", "krea_edit_both",
+    ),
+    "krea2_raw": (
         "none", "krea_nsfw", "krea_snapshot", "krea_both",
         "krea_edit", "krea_edit_nsfw", "krea_edit_snapshot", "krea_edit_both",
     ),
@@ -169,7 +174,7 @@ def config_comfyui_keyboard(deps: dict[str, Any], user_id: int) -> InlineKeyboar
     cfg = get_comfyui_config(user_id)
     model_labels = COMFYUI_MODEL_LABELS
     rows = []
-    for k in ("qwen", "krea2", "krea2_moody", "wan_i2v"):
+    for k in ("qwen", "krea2", "krea2_raw", "krea2_moody", "wan_i2v"):
         mark = "✅ " if k == cfg["model"] else "• "
         rows.append(
             [

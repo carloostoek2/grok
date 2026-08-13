@@ -303,6 +303,7 @@ def _validate_prompt(prompt: str, *, max_len: int = TELEGRAM_MAX_TEXT_LEN) -> st
 COMFYUI_CAPTION_MODEL_LABELS = {
     "qwen": "Qwen-Image-Edit 2511",
     "krea2": "Krea 2",
+    "krea2_raw": "Krea 2 RAW",
     "krea2_moody": "Moody (Krea 2 Mix)",
     "wan_i2v": "Wan 2.2",
 }
@@ -3129,7 +3130,7 @@ async def _generate_comfyui(
                     "El generador de video necesita una foto de entrada:\n"
                     "envía una foto con el prompt, o responde a una foto con el texto."
                 )
-            if cm in ("krea2", "krea2_moody") and cl.startswith("krea_edit"):
+            if cm in ("krea2", "krea2_raw", "krea2_moody") and cl.startswith("krea_edit"):
                 return None, (
                     "La edición de identidad necesita una foto de entrada:\n"
                     "envía la foto de la persona + el prompt de edición (o responde a una foto)."
