@@ -126,7 +126,6 @@ COMFYUI_MODEL_LABELS = {
     "krea2": "Krea 2 (Turbo)",
     "krea2_moody": "Moody (Krea 2 Mix)",
     "wan_i2v": "Wan 2.2 (video)",
-    "minimax_i2v": "MiniMax H3 (video)",
 }
 COMFYUI_LORA_LABELS = {
     "none": "Sin LoRA",
@@ -153,7 +152,6 @@ COMFYUI_LORAS_BY_MODEL = {
         "krea_edit", "krea_edit_nsfw", "krea_edit_snapshot", "krea_edit_both",
     ),
     "wan_i2v": ("none", "lightx2v"),
-    "minimax_i2v": ("none",),
 }
 
 
@@ -163,8 +161,6 @@ def _comfyui_lora_label(model: str, key: str) -> str:
             return "Full (calidad, 40 pasos)"
         if key == "lightx2v":
             return "Rápido (lightx2v, 4×)"
-    if model == "minimax_i2v" and key == "none":
-        return "Full (calidad)"
     return COMFYUI_LORA_LABELS.get(key, key)
 
 
@@ -173,7 +169,7 @@ def config_comfyui_keyboard(deps: dict[str, Any], user_id: int) -> InlineKeyboar
     cfg = get_comfyui_config(user_id)
     model_labels = COMFYUI_MODEL_LABELS
     rows = []
-    for k in ("qwen", "krea2", "krea2_moody", "wan_i2v", "minimax_i2v"):
+    for k in ("qwen", "krea2", "krea2_moody", "wan_i2v"):
         mark = "✅ " if k == cfg["model"] else "• "
         rows.append(
             [
@@ -203,7 +199,7 @@ def _comfyui_screen_text(deps: dict[str, Any], user_id: int, *, updated: bool = 
     header = "Configuración actualizada ✅\n" if updated else "Configuración de ComfyUI (GPU propia):\n"
     model_label = COMFYUI_MODEL_LABELS.get(cfg["model"], cfg["model"])
     lora_label = _comfyui_lora_label(cfg["model"], cfg["lora"])
-    if cfg["model"] in ("minimax_i2v", "wan_i2v"):
+    if cfg["model"] == "wan_i2v":
         hint = "\nVideo: envía una foto + prompt (o responde a una foto) para generar el video."
     else:
         hint = ""
