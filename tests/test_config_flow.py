@@ -1022,3 +1022,15 @@ async def test_cfg_rejects_non_private_callback(
     )
     mock_config_safe_edit.assert_not_awaited()
     state.clear.assert_not_awaited()
+
+
+def test_comfyui_krea_edit_lora_options():
+    """Los modos de edición de identidad existen para Krea 2 / Moody y son válidos."""
+    from sessions import VALID_COMFYUI_LORAS
+
+    edit_keys = ("krea_edit", "krea_edit_nsfw", "krea_edit_snapshot", "krea_edit_both")
+    for model in ("krea2", "krea2_moody"):
+        for k in edit_keys:
+            assert k in config_flow.COMFYUI_LORAS_BY_MODEL[model]
+            assert k in config_flow.COMFYUI_LORA_LABELS
+            assert k in VALID_COMFYUI_LORAS

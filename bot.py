@@ -310,9 +310,15 @@ COMFYUI_CAPTION_MODEL_LABELS = {
 COMFYUI_CAPTION_LORA_LABELS = {
     "none": "Sin LoRA",
     "lightning": "Lightning 4 pasos",
+    "multiangle": "Multi-ángulo (auto)",
+    "multiangle_batch": "Multi-ángulo ×5 (auto)",
     "krea_nsfw": "NSFW V4",
     "krea_snapshot": "Realistic Snapshot",
     "krea_both": "NSFW V4 + Realistic Snapshot",
+    "krea_edit": "✏️ Editar (Identity)",
+    "krea_edit_nsfw": "✏️ Editar + NSFW",
+    "krea_edit_snapshot": "✏️ Editar + Snapshot",
+    "krea_edit_both": "✏️ Editar + NSFW + Snapshot",
     "lightx2v": "lightx2v (rápido)",
 }
 
@@ -3026,11 +3032,12 @@ def _comfyui_ssh_base() -> tuple[str, int | None, str | None]:
     )
 
 
-async def _comfyui_run_remote(cmd: str, prompt: str, *, timeout: int = 600) -> str:
-    """Run gen_comfy.py on the box with the prompt on stdin. Returns output path or ''."""
+async def _comfyui_run_remote(cmd: str, prompt: str, *, timeout: int = 600) -> list[str]:
+    """Run gen_comfy.py on the box with the prompt on stdin. Returns list of
+    output paths (multi-image: batch de multi-ángulo devuelve 5) o []."""
     ssh_base, _port, err = _comfyui_ssh_base()
     if err or not ssh_base:
-        return ""
+        return []
     proc = await asyncio.to_thread(
         subprocess.run,
         ssh_base.split() + [cmd],
@@ -3039,10 +3046,10 @@ async def _comfyui_run_remote(cmd: str, prompt: str, *, timeout: int = 600) -> s
         timeout=timeout,
     )
     if proc.returncode != 0:
-        return ""
+        return []
     out = (proc.stdout or b"").decode(errors="replace").strip()
     lines = [l for l in out.splitlines() if l.startswith("/workspace")]
-    return lines[-1] if lines else ""
+    return lines  # TODAS las salidas (batch = 5 paths)
 
 
 def _comfyui_tmpdir() -> str:
@@ -3106,11 +3113,11 @@ async def _generate_comfyui(
     image_data: BytesIO | None = None,
     *,
     status_msg: types.Message | None = None,
-) -> tuple[str | None, str | None]:
+) -> tuple[list[str] | None, str | None]:
     """Generate (txt2img) or edit (img2img) via ComfyUI on the Vast box.
 
-    Returns (local_path, err). The caller sends the local file to Telegram.
-    """
+    Returns (lista de local_paths, err). El caller envía los archivos a Telegram
+    (batch multi-ángulo = 5 imágenes)."""
     _ssh_base, port, err = _comfyui_ssh_base()
     if err:
         return None, err
@@ -3123,8 +3130,13 @@ async def _generate_comfyui(
                     "El generador de video necesita una foto de entrada:\n"
                     "envía una foto con el prompt, o responde a una foto con el texto."
                 )
+            if cm in ("krea2", "krea2_moody") and cl.startswith("krea_edit"):
+                return None, (
+                    "La edición de identidad necesita una foto de entrada:\n"
+                    "envía la foto de la persona + el prompt de edición (o responde a una foto)."
+                )
             cmd = f"MODEL='{cm}' LORA='{cl}' python3 /workspace/gen_comfy.py"
-            remote = await _comfyui_run_remote(cmd, prompt)
+            remotes = await _comfyui_run_remote(cmd, prompt)
         else:
             name = await _comfyui_upload(image_data)
             if not name:
@@ -3133,16 +3145,20 @@ async def _generate_comfyui(
                 f"MODEL='{cm}' LORA='{cl}' INPUT_IMAGE='{name}' "
                 f"python3 /workspace/gen_comfy.py"
             )
-            remote = await _comfyui_run_remote(cmd, prompt)
-        if not remote:
+            remotes = await _comfyui_run_remote(cmd, prompt)
+        if not remotes:
             return None, (
                 "ComfyUI no devolvió imagen. Revisa el box: "
                 f"ssh -p {port} root@{COMFYUI_HOST} 'supervisorctl status comfyui'"
             )
-        local = await _comfyui_pull(remote)
-        if not local:
+        locals_ = []
+        for rp in remotes:
+            local = await _comfyui_pull(rp)
+            if local:
+                locals_.append(local)
+        if not locals_:
             return None, "No pude descargar la imagen del box."
-        return local, None
+        return locals_, None
     except Exception as e:
         return None, f"Error de ComfyUI: {e}"
 
@@ -3232,14 +3248,68 @@ async def _send_comfyui_output(
     prefix: str,
     regen_context: dict,
 ) -> bool:
-    """Dispatch: video (MiniMax/Wan) o imagen (resto de modelos ComfyUI)."""
+    """Dispatch: video (MiniMax/Wan) o imagen (resto de modelos ComfyUI).
+    output puede ser una LISTA (batch multi-ángulo = 5 imágenes → álbum)."""
     if _comfyui_is_video(model):
         return await _send_comfyui_video(
             output, prompt, status_msg, message, prefix, regen_context, model=model
         )
+    if isinstance(output, list):
+        if len(output) == 1:
+            output = output[0]
+        elif len(output) > 1:
+            return await _send_comfyui_album(
+                output, prompt, status_msg, message, prefix, regen_context, model=model
+            )
     return await _send_comfyui_image(
         output, prompt, status_msg, message, prefix, regen_context, model=model
     )
+
+
+async def _send_comfyui_album(
+    outputs: list,
+    prompt: str,
+    status_msg: types.Message,
+    message: types.Message,
+    prefix: str,
+    regen_context: dict,
+    *,
+    model: dict | None = None,
+) -> bool:
+    """Envía varias imágenes como álbum de Telegram (máx 10)."""
+    media: list = []
+    for i, p in enumerate(outputs[:10]):
+        try:
+            with open(str(p), "rb") as f:
+                data = f.read()
+        except (OSError, TypeError):
+            continue
+        cap = _format_result_caption(prefix, prompt, model=model) if i == 0 else None
+        media.append(
+            types.InputMediaPhoto(
+                media=BufferedInputFile(data, filename=f"comfyui_{i}.png"),
+                caption=cap,
+                parse_mode="HTML",
+            )
+        )
+    if not media:
+        await status_msg.edit_text("No se pudieron leer las imágenes generadas.")
+        return False
+    sent = await message.answer_media_group(
+        media,
+        reply_to_message_id=message.message_id,
+        allow_sending_without_reply=True,
+    )
+    sessions.save_generation_ref(
+        message.chat.id,
+        sent[0].message_id,
+        provider="comfyui",
+        kind="image",
+        prompt=prompt,
+        regen=regen_context,
+    )
+    await status_msg.delete()
+    return True
 
 
 XAI_BASE = "https://api.x.ai/v1"

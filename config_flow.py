@@ -134,12 +134,24 @@ COMFYUI_LORA_LABELS = {
     "krea_nsfw": "Krea2 NSFW V4",
     "krea_snapshot": "Realistic Snapshot",
     "krea_both": "NSFW V4 + Realistic Snapshot",
+    "krea_edit": "✏️ Editar (Identity Edit)",
+    "krea_edit_nsfw": "✏️ Editar + NSFW V4",
+    "krea_edit_snapshot": "✏️ Editar + Snapshot",
+    "krea_edit_both": "✏️ Editar + NSFW + Snapshot",
     "lightx2v": "Rápido (lightx2v)",
+    "multiangle": "🎲 Multi-ángulo (auto)",
+    "multiangle_batch": "🎲 Multi-ángulo ×5 (auto)",
 }
 COMFYUI_LORAS_BY_MODEL = {
-    "qwen": ("none", "lightning"),
-    "krea2": ("none", "krea_nsfw", "krea_snapshot", "krea_both"),
-    "krea2_moody": ("none", "krea_nsfw", "krea_snapshot", "krea_both"),
+    "qwen": ("none", "lightning", "multiangle", "multiangle_batch"),
+    "krea2": (
+        "none", "krea_nsfw", "krea_snapshot", "krea_both",
+        "krea_edit", "krea_edit_nsfw", "krea_edit_snapshot", "krea_edit_both",
+    ),
+    "krea2_moody": (
+        "none", "krea_nsfw", "krea_snapshot", "krea_both",
+        "krea_edit", "krea_edit_nsfw", "krea_edit_snapshot", "krea_edit_both",
+    ),
     "wan_i2v": ("none", "lightx2v"),
     "minimax_i2v": ("none",),
 }
