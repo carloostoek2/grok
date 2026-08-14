@@ -557,3 +557,62 @@ async def test_batch_regen_context_has_kie_provider(sessions_file, variables_fil
     assert regen["provider"] == "kie"
     assert regen["source_file_id"] == "p1"
     assert regen["prompt"] == "de pie, frontal, mirando"
+
+
+# ---------------------------------------------------------------------------
+# ComfyUI provider path
+# ---------------------------------------------------------------------------
+async def test_batch_comfyui_uses_selected_model_and_sends_via_comfyui(
+    sessions_file, variables_file, monkeypatch
+):
+    """When the selected model is comfyui, /variables edits on the GPU and routes
+    results through _send_comfyui_output (never process_image_result)."""
+    monkeypatch.setattr(bot, "COMFYUI_HOST", "1.2.3.4")
+    bot.user_state[1001] = {"model": "comfyui"}
+    msg = _make_photo_message(caption="/variables 2")
+    msg.answer.return_value = _make_status()
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        assert model.get("provider") == "comfyui"
+        return (["/tmp/comfyui_1.png"], None, None)
+
+    with patch.object(bot, "generate_image", side_effect=_fake_gen) as mock_gen:
+        with patch.object(bot, "_send_comfyui_output", new_callable=AsyncMock) as mock_send:
+            with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_proc:
+                with patch(
+                    "variables_store.random_combination",
+                    return_value=("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
+                ):
+                    await bot._run_variables_batch(
+                        msg, 2, BytesIO(b"img"), None, source_file_id="p1"
+                    )
+
+    assert mock_gen.await_count == 2
+    assert mock_send.await_count == 2
+    assert mock_proc.await_count == 0
+    # the status message is reused across the batch loop, so it must not be deleted
+    for call in mock_send.await_args_list:
+        assert call.kwargs.get("delete_status") is False
+    last_text = msg.answer.return_value.edit_text.call_args.args[0]
+    assert "Listo: 2/2" in last_text
+
+
+async def test_batch_comfyui_requires_host(sessions_file, variables_file, monkeypatch):
+    monkeypatch.setattr(bot, "COMFYUI_HOST", "")
+    bot.user_state[1001] = {"model": "comfyui"}
+    msg = _make_photo_message(caption="/variables 2")
+    with patch.object(bot, "generate_image", new_callable=AsyncMock) as mock_gen:
+        await bot._run_variables_batch(msg, 2, BytesIO(b"img"), None)
+    assert "ComfyUI no configurado" in msg.answer.call_args.args[0]
+    mock_gen.assert_not_awaited()
+
+
+async def test_batch_comfyui_rejects_video_model(sessions_file, variables_file, monkeypatch):
+    monkeypatch.setattr(bot, "COMFYUI_HOST", "1.2.3.4")
+    bot.user_state[1001] = {"model": "comfyui"}
+    monkeypatch.setattr(bot, "_comfyui_is_video", lambda m: True)
+    msg = _make_photo_message(caption="/variables 2")
+    with patch.object(bot, "generate_image", new_callable=AsyncMock) as mock_gen:
+        await bot._run_variables_batch(msg, 2, BytesIO(b"img"), None)
+    assert "video" in msg.answer.call_args.args[0]
+    mock_gen.assert_not_awaited()

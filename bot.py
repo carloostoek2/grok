@@ -1890,9 +1890,28 @@ async def _run_variables_batch(
     on the first provider error.
     """
     uid = message.from_user.id
-    if not KIE_API_KEY:
-        await message.answer(_KIE_NOT_CONFIGURED_MSG)
-        return
+    use_comfyui = get_user_state(uid)["model"] == "comfyui"
+    if use_comfyui:
+        model = get_model(uid)
+        if not COMFYUI_HOST:
+            await message.answer(
+                "ComfyUI no configurado: agrega COMFYUI_HOST y COMFYUI_PORT "
+                "al .env y reinicia el servicio."
+            )
+            return
+        if _comfyui_is_video(model):
+            await message.answer(
+                "El modelo de video no aplica para /variables; "
+                "selecciona un modelo de imagen en /config."
+            )
+            return
+    else:
+        if not KIE_API_KEY:
+            await message.answer(_KIE_NOT_CONFIGURED_MSG)
+            return
+        # /variables edits through the Kie provider (image-to-image) para modelos no-GPU.
+        variant = get_grok_imagine_config(uid)["variant"]
+        model = _grok_model_for_config(uid, "kie", variant)
 
     lists = variables_store.get_lists()
     for name in variables_store.LIST_NAMES:
@@ -1903,10 +1922,6 @@ async def _run_variables_batch(
                 parse_mode="HTML",
             )
             return
-
-    # /variables always edits through the Kie provider (image-to-image).
-    variant = get_grok_imagine_config(uid)["variant"]
-    model = _grok_model_for_config(uid, "kie", variant)
 
     cancel_event = _start_job(uid, "variables")
     status_msg = None
@@ -1964,25 +1979,38 @@ async def _run_variables_batch(
                     reply_markup=None,
                 )
                 return
-            await process_image_result(
-                output,
-                prompt,
-                status_msg,
-                message,
-                f"Variables {i}/{count}",
-                download_allowlist=_download_allowlist_for_provider("kie"),
-                kie_meta=kie_meta,
-                regen_context=_build_image_regen_context(
-                    model=model,
-                    user_id=uid,
-                    prompt=prompt,
-                    mode="edit",
-                    source_file_id=source_file_id,
-                    kie_source_ref=kie_source_ref,
-                ),
-                delete_status=False,
+            regen_context = _build_image_regen_context(
                 model=model,
+                user_id=uid,
+                prompt=prompt,
+                mode="edit",
+                source_file_id=source_file_id,
+                kie_source_ref=kie_source_ref,
             )
+            if use_comfyui:
+                await _send_comfyui_output(
+                    model,
+                    output,
+                    prompt,
+                    status_msg,
+                    message,
+                    f"Variables {i}/{count}",
+                    regen_context,
+                    delete_status=False,
+                )
+            else:
+                await process_image_result(
+                    output,
+                    prompt,
+                    status_msg,
+                    message,
+                    f"Variables {i}/{count}",
+                    download_allowlist=_download_allowlist_for_provider("kie"),
+                    kie_meta=kie_meta,
+                    regen_context=regen_context,
+                    delete_status=False,
+                    model=model,
+                )
             completed = i
 
         await status_msg.edit_text(
@@ -3171,6 +3199,7 @@ async def _send_comfyui_image(
     prefix: str,
     regen_context: dict,
     model: dict | None = None,
+    delete_status: bool = True,
 ) -> bool:
     """Send a ComfyUI local-file result to Telegram directly (bypasses the
     URL-download machinery in process_image_result, which chokes on local paths)."""
@@ -3196,7 +3225,8 @@ async def _send_comfyui_image(
         prompt=prompt,
         regen=regen_context,
     )
-    await status_msg.delete()
+    if delete_status:
+        await status_msg.delete()
     return True
 
 
@@ -3213,6 +3243,7 @@ async def _send_comfyui_video(
     prefix: str,
     regen_context: dict,
     model: dict | None = None,
+    delete_status: bool = True,
 ) -> bool:
     """Send a ComfyUI Wan/MiniMax MP4 result to Telegram as a video."""
     try:
@@ -3235,7 +3266,8 @@ async def _send_comfyui_video(
         prompt=prompt,
         regen=regen_context,
     )
-    await status_msg.delete()
+    if delete_status:
+        await status_msg.delete()
     return True
 
 
@@ -3247,22 +3279,27 @@ async def _send_comfyui_output(
     message: types.Message,
     prefix: str,
     regen_context: dict,
+    *,
+    delete_status: bool = True,
 ) -> bool:
     """Dispatch: video (MiniMax/Wan) o imagen (resto de modelos ComfyUI).
     output puede ser una LISTA (batch multi-ángulo = 5 imágenes → álbum)."""
     if _comfyui_is_video(model):
         return await _send_comfyui_video(
-            output, prompt, status_msg, message, prefix, regen_context, model=model
+            output, prompt, status_msg, message, prefix, regen_context, model=model,
+            delete_status=delete_status,
         )
     if isinstance(output, list):
         if len(output) == 1:
             output = output[0]
         elif len(output) > 1:
             return await _send_comfyui_album(
-                output, prompt, status_msg, message, prefix, regen_context, model=model
+                output, prompt, status_msg, message, prefix, regen_context, model=model,
+                delete_status=delete_status,
             )
     return await _send_comfyui_image(
-        output, prompt, status_msg, message, prefix, regen_context, model=model
+        output, prompt, status_msg, message, prefix, regen_context, model=model,
+        delete_status=delete_status,
     )
 
 
@@ -3275,6 +3312,7 @@ async def _send_comfyui_album(
     regen_context: dict,
     *,
     model: dict | None = None,
+    delete_status: bool = True,
 ) -> bool:
     """Envía varias imágenes como álbum de Telegram (máx 10)."""
     media: list = []
@@ -3308,7 +3346,8 @@ async def _send_comfyui_album(
         prompt=prompt,
         regen=regen_context,
     )
-    await status_msg.delete()
+    if delete_status:
+        await status_msg.delete()
     return True
 
 
