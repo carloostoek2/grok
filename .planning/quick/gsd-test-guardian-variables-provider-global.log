@@ -1,0 +1,7 @@
+2026-08-17T01:23:10+00:00 START test-guardian variables-provider-global — reading reports and tests
+2026-08-17T01:25:21+00:00 AUDIT — 10 DoD present; gap: generate_image kie_ref strip/forward not asserted; default kie allowlist not asserted. Tightening existing tests.
+2026-08-17T01:25:55+00:00 RUN primary pytest tests/test_variables_command.py
+2026-08-17T01:26:01+00:00 RUN regression pytest variables+album+cancel+kie
+2026-08-17T01:26:10+00:00 MUTATION — temporarily always pass raw kie_source_ref to prove regen tests fail
+2026-08-17T01:26:31+00:00 MUTATION restored; writing report
+2026-08-17T01:27:41+00:00 REPORT written; verdict suite protege adecuadamente

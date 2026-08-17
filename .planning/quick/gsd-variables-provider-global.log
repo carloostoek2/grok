@@ -1,0 +1,26 @@
+[2026-08-17T01:14:41+00:00] start gsd-executor: variables-provider-global
+[2026-08-17T01:15:20+00:00] read PLAN.md, impact analysis, skills (gsd-executor, work-unit-commits, test-quality-flow, telegram-bot-hardener)
+[2026-08-17T01:16:00+00:00] Task 1 start: write failing tests in tests/test_variables_command.py (no bot.py edits)
+[2026-08-17T01:16:49+00:00] Task 1 RED confirmed: 10 failed (xai/replicate/seedream/video/faceswap/reply-ref/regen/xai-key/replicate-token/seek), 17 passed default-kie+ComfyUI+routing
+[2026-08-17T01:17:15+00:00] Task 2 start: implement get_model routing, rejects, allowlist, reply gate in bot.py
+[2026-08-17T01:18:40+00:00] Task 2 GREEN: tests/test_variables_command.py 41 passed
+[2026-08-17T01:18:45+00:00] Task 3 start: README /variables + regression + full suite
+[2026-08-17T01:19:30+00:00] Task 3 GREEN: regression 196 passed; full tests/ 375 passed, 2 skipped
+[2026-08-17T01:20:10+00:00] commit a22ddaea3b3c8e04a88ad347074a0262411ed9f0 feat(variables): run batch on configured image provider
+[2026-08-17T01:20:40+00:00] wrote SUMMARY.md; saved engram architecture/variables-provider
+
+## Self-Check: PASSED
+- [x] Todas las tareas completadas
+- [x] Tests del PLAN corridos
+- [x] 0 regresiones atribuibles
+- [x] Convenciones del proyecto respetadas
+
+[2026-08-17T01:35:00+00:00] review fix round 1 start: 3 open test-coverage issues + include test-guardian hardening
+[2026-08-17T01:36:40+00:00] review fix round 1 GREEN: 43 passed; all 3 issues fixed
+[2026-08-17T01:37:10+00:00] commit c7c66405ba57740de14106896b6c61957b93f2ea test(variables): lock i2i image_data and kie reply batch path
+
+## Self-Check: PASSED
+- [x] Todas las tareas completadas
+- [x] Tests del PLAN corridos
+- [x] 0 regresiones atribuibles
+- [x] Convenciones del proyecto respetadas
