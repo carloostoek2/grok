@@ -29,7 +29,7 @@ Use `/config` (or `/video`) to change the model (`grok-imagine-video` base or `g
 
 ## Batch image editing with variables (/variables)
 
-`/variables` runs a batch of image edits through the **Kie.ai** provider, each with a prompt built from a random combination of three admin-managed lists: **poses**, **ángulos** and **acciones**.
+`/variables` runs a batch of image edits on the user's **configured image model/provider** (Grok Imagine via xAI, Replicate, or Kie.ai; Seedream; ComfyUI image). Video models (Grok Imagine Video, ComfyUI Wan i2v) and Face Swap are rejected — pick an image model in `/config`. Each edit uses a prompt built from a random combination of three admin-managed lists: **poses**, **ángulos** and **acciones**.
 
 - Send a photo with caption `/variables 5` (or reply to a photo with `/variables 5`) to generate 5 edits. `N` is clamped to 1–10.
 - Every iteration reuses the **original image** (results are never chained) and picks a fresh random pose/angle/action combo (repeating combos within a batch are avoided when possible).

@@ -48,6 +48,15 @@ def _make_status():
     return status
 
 
+def _set_user_image_config(uid=1001, *, model="grok", provider=None):
+    """Mutate hydrated user_state; do not replace the whole dict."""
+    state = bot.get_user_state(uid)
+    state["model"] = model
+    if provider is not None:
+        state["grok_imagine_provider"] = provider
+    return state
+
+
 # ---------------------------------------------------------------------------
 # Parsing helpers
 # ---------------------------------------------------------------------------
@@ -428,7 +437,7 @@ async def test_batch_generates_count_images_with_distinct_prompts(sessions_file,
     assert mock_gen.await_count == 3
     prompts = [call.args[1] for call in mock_gen.await_args_list]
     assert len(set(prompts)) == 3
-    # model forced to Kie provider for every call
+    # default config is kie
     for call in mock_gen.await_args_list:
         assert call.args[0]["provider"] == "kie"
     assert mock_res.await_count == 3
@@ -437,7 +446,7 @@ async def test_batch_generates_count_images_with_distinct_prompts(sessions_file,
     assert "Listo: 3/3" in last_text
 
 
-async def test_batch_forces_kie_and_reuses_original_image(sessions_file, variables_file):
+async def test_batch_reuses_original_image(sessions_file, variables_file):
     """Each iteration must pass the same original image (never the result)."""
     msg = _make_photo_message(caption="/variables 2")
     msg.answer.return_value = _make_status()
@@ -445,7 +454,9 @@ async def test_batch_forces_kie_and_reuses_original_image(sessions_file, variabl
     seen_images = []
 
     async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        assert image_data.tell() == 0
         seen_images.append(image_data)
+        image_data.read()
         return ([RESULT_URL], None, {"task_id": "t", "index": 0, "provider": "kie"})
 
     combos = [
@@ -557,6 +568,170 @@ async def test_batch_regen_context_has_kie_provider(sessions_file, variables_fil
     assert regen["provider"] == "kie"
     assert regen["source_file_id"] == "p1"
     assert regen["prompt"] == "de pie, frontal, mirando"
+
+
+async def test_batch_uses_xai_when_configured(sessions_file, variables_file, monkeypatch):
+    _set_user_image_config(provider="xai")
+    monkeypatch.setattr(bot, "KIE_API_KEY", "")
+    msg = _make_photo_message(caption="/variables 1")
+    msg.answer.return_value = _make_status()
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        return (["https://api.x.ai/out.png"], None, None)
+
+    with patch.object(bot, "generate_image", side_effect=_fake_gen) as mock_gen:
+        with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
+            with patch(
+                "variables_store.random_combination",
+                return_value=("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
+            ):
+                await bot._run_variables_batch(
+                    msg, 1, BytesIO(b"img"), None, source_file_id="p1"
+                )
+
+    mock_gen.assert_awaited_once()
+    assert mock_gen.await_args.args[0]["provider"] == "xai"
+    assert mock_res.await_args.kwargs.get("download_allowlist") == "xai"
+    last_text = msg.answer.return_value.edit_text.call_args.args[0]
+    assert "Listo: 1/1" in last_text
+
+
+async def test_batch_uses_replicate_when_configured(sessions_file, variables_file):
+    _set_user_image_config(provider="replicate")
+    msg = _make_photo_message(caption="/variables 1")
+    msg.answer.return_value = _make_status()
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        return ([RESULT_URL], None, None)
+
+    with patch.object(bot, "generate_image", side_effect=_fake_gen) as mock_gen:
+        with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
+            with patch(
+                "variables_store.random_combination",
+                return_value=("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
+            ):
+                await bot._run_variables_batch(
+                    msg, 1, BytesIO(b"img"), None, source_file_id="p1"
+                )
+
+    mock_gen.assert_awaited_once()
+    assert mock_gen.await_args.args[0]["provider"] == "replicate"
+    assert mock_res.await_args.kwargs.get("download_allowlist") is None
+
+
+async def test_batch_uses_seedream_when_selected(sessions_file, variables_file):
+    _set_user_image_config(model="seedream")
+    msg = _make_photo_message(caption="/variables 1")
+    msg.answer.return_value = _make_status()
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        return ([RESULT_URL], None, None)
+
+    with patch.object(bot, "generate_image", side_effect=_fake_gen) as mock_gen:
+        with patch.object(bot, "process_image_result", new_callable=AsyncMock):
+            with patch(
+                "variables_store.random_combination",
+                return_value=("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
+            ):
+                await bot._run_variables_batch(
+                    msg, 1, BytesIO(b"img"), None, source_file_id="p1"
+                )
+
+    model = mock_gen.await_args.args[0]
+    assert model["key"] == "seedream"
+    assert model["provider"] == "replicate"
+
+
+async def test_batch_rejects_grok_video(sessions_file, variables_file, monkeypatch):
+    _set_user_image_config(model="grok_video")
+    monkeypatch.setattr(bot, "KIE_API_KEY", "")
+    msg = _make_photo_message(caption="/variables 2")
+    with patch.object(bot, "generate_image", new_callable=AsyncMock) as mock_gen:
+        await bot._run_variables_batch(msg, 2, BytesIO(b"img"), None)
+    text = msg.answer.call_args.args[0]
+    assert "video" in text
+    assert "Kie.ai" not in text
+    mock_gen.assert_not_awaited()
+
+
+async def test_batch_rejects_faceswap(sessions_file, variables_file):
+    _set_user_image_config(model="faceswap")
+    msg = _make_photo_message(caption="/variables 2")
+    with patch.object(bot, "generate_image", new_callable=AsyncMock) as mock_gen:
+        await bot._run_variables_batch(msg, 2, BytesIO(b"img"), None)
+    text = msg.answer.call_args.args[0]
+    assert "Face Swap" in text
+    assert "/config" in text
+    mock_gen.assert_not_awaited()
+
+
+async def test_cmd_variables_reply_ignores_kie_ref_when_provider_not_kie(
+    sessions_file, variables_file
+):
+    _set_user_image_config(provider="xai")
+    msg = _make_reply_message(text="/variables 2", photo_file_id="r7")
+    image = BytesIO(b"fake-reply")
+    ref = {"task_id": "task-abc", "index": 0}
+    with patch.object(bot, "_resolve_reply_kie_ref", return_value=ref):
+        with patch.object(bot, "_download_telegram_photo", new_callable=AsyncMock, return_value=image) as mock_dl:
+            with patch.object(bot, "_run_variables_batch", new_callable=AsyncMock) as mock_batch:
+                await bot.cmd_variables_reply(msg)
+    mock_dl.assert_awaited_once()
+    mock_batch.assert_awaited_once()
+    args, kwargs = mock_batch.call_args
+    assert args[2] is image
+    assert args[3] is None
+    assert kwargs.get("source_file_id") == "r7"
+
+
+async def test_batch_regen_context_matches_configured_provider(sessions_file, variables_file):
+    _set_user_image_config(provider="xai")
+    msg = _make_photo_message(caption="/variables 1")
+    msg.answer.return_value = _make_status()
+    kie_ref = {"task_id": "task-xyz", "index": 0}
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        return ([RESULT_URL], None, None)
+
+    captured = {}
+
+    async def _fake_process(output, prompt, status_msg, message, prefix, **kwargs):
+        captured.update(kwargs)
+
+    with patch.object(bot, "generate_image", side_effect=_fake_gen):
+        with patch.object(bot, "process_image_result", side_effect=_fake_process):
+            with patch(
+                "variables_store.random_combination",
+                return_value=("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
+            ):
+                await bot._run_variables_batch(
+                    msg, 1, BytesIO(b"img"), kie_ref, source_file_id="p1"
+                )
+
+    regen = captured["regen_context"]
+    assert regen["provider"] == "xai"
+    assert regen["source_file_id"] == "p1"
+    assert "kie_source_ref" not in regen
+
+
+async def test_batch_xai_missing_key(sessions_file, variables_file, monkeypatch):
+    _set_user_image_config(provider="xai")
+    monkeypatch.setattr(bot, "XAI_API_KEY", "")
+    msg = _make_photo_message(caption="/variables 2")
+    with patch.object(bot, "generate_image", new_callable=AsyncMock) as mock_gen:
+        await bot._run_variables_batch(msg, 2, BytesIO(b"img"), None)
+    assert "xAI no está disponible" in msg.answer.call_args.args[0]
+    mock_gen.assert_not_awaited()
+
+
+async def test_batch_replicate_missing_token(sessions_file, variables_file, monkeypatch):
+    _set_user_image_config(provider="replicate")
+    monkeypatch.setattr(bot, "REPLICATE_TOKEN", "")
+    msg = _make_photo_message(caption="/variables 2")
+    with patch.object(bot, "generate_image", new_callable=AsyncMock) as mock_gen:
+        await bot._run_variables_batch(msg, 2, BytesIO(b"img"), None)
+    assert "Replicate no está disponible" in msg.answer.call_args.args[0]
+    mock_gen.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

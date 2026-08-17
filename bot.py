@@ -243,6 +243,12 @@ def _prov_label(prov: str) -> str:
 
 
 _KIE_NOT_CONFIGURED_MSG = "Kie.ai no está disponible en este momento. Contacta al administrador del bot."
+_XAI_NOT_CONFIGURED_MSG = (
+    "xAI no está disponible en este momento. Contacta al administrador del bot."
+)
+_REPLICATE_NOT_CONFIGURED_MSG = (
+    "Replicate no está disponible en este momento. Contacta al administrador del bot."
+)
 _KIE_PRIVACY_NOTICE = (
     "Los prompts e imágenes se envían a servidores de Kie.ai (tercero) para procesamiento."
 )
@@ -1817,7 +1823,8 @@ async def _complete_long_prompt_collection(message: types.Message, prompt: str) 
 
 
 # ---------------------------------------------------------------------------
-# /variables N — batch image editing with random pose/angle/action combos (Kie)
+# /variables N — batch image editing with random pose/angle/action combos
+# on the user's configured image model
 # ---------------------------------------------------------------------------
 def _is_variables_command(text: str | None) -> bool:
     """True when a caption/reply text is a /variables invocation.
@@ -1875,6 +1882,34 @@ async def cmd_variables_help(message: types.Message):
     )
 
 
+def _variables_model_or_reject(uid: int) -> tuple[dict | None, str | None]:
+    """Return (model, None) or (None, user-facing reject message)."""
+    model = get_model(uid)
+    if model.get("key") == "grok_video" or _comfyui_is_video(model):
+        return None, (
+            "El modelo de video no aplica para /variables; "
+            "selecciona un modelo de imagen en /config."
+        )
+    if model.get("key") == "faceswap":
+        return None, (
+            "Face Swap no aplica para /variables; "
+            "selecciona un modelo de imagen en /config."
+        )
+    provider = model.get("provider")
+    if provider == "kie" and not KIE_API_KEY:
+        return None, _KIE_NOT_CONFIGURED_MSG
+    if provider == "comfyui" and not COMFYUI_HOST:
+        return None, (
+            "ComfyUI no configurado: agrega COMFYUI_HOST y COMFYUI_PORT "
+            "al .env y reinicia el servicio."
+        )
+    if provider == "xai" and not XAI_API_KEY:
+        return None, _XAI_NOT_CONFIGURED_MSG
+    if provider == "replicate" and not REPLICATE_TOKEN:
+        return None, _REPLICATE_NOT_CONFIGURED_MSG
+    return model, None
+
+
 async def _run_variables_batch(
     message: types.Message,
     count: int,
@@ -1883,35 +1918,18 @@ async def _run_variables_batch(
     *,
     source_file_id: str | None = None,
 ) -> None:
-    """Run `count` Kie image edits, each with a fresh random variable combo.
+    """Run `count` image edits on the user's configured image model.
 
     Always uses the original source image (never chains results), relaunching
     automatically after each result arrives. The batch is cancellable and stops
     on the first provider error.
     """
     uid = message.from_user.id
-    use_comfyui = get_user_state(uid)["model"] == "comfyui"
-    if use_comfyui:
-        model = get_model(uid)
-        if not COMFYUI_HOST:
-            await message.answer(
-                "ComfyUI no configurado: agrega COMFYUI_HOST y COMFYUI_PORT "
-                "al .env y reinicia el servicio."
-            )
-            return
-        if _comfyui_is_video(model):
-            await message.answer(
-                "El modelo de video no aplica para /variables; "
-                "selecciona un modelo de imagen en /config."
-            )
-            return
-    else:
-        if not KIE_API_KEY:
-            await message.answer(_KIE_NOT_CONFIGURED_MSG)
-            return
-        # /variables edits through the Kie provider (image-to-image) para modelos no-GPU.
-        variant = get_grok_imagine_config(uid)["variant"]
-        model = _grok_model_for_config(uid, "kie", variant)
+    model, reject_msg = _variables_model_or_reject(uid)
+    if reject_msg:
+        await message.answer(reject_msg)
+        return
+    use_comfyui = model.get("provider") == "comfyui"
 
     lists = variables_store.get_lists()
     for name in variables_store.LIST_NAMES:
@@ -1958,11 +1976,15 @@ async def _run_variables_batch(
             prompt, combo_tuple = combo
             used_combos.add(combo_tuple)
 
+            if image_data is not None:
+                image_data.seek(0)
+            kie_ref = kie_source_ref if model.get("provider") == "kie" else None
+
             output, err, kie_meta = await generate_image(
                 model,
                 prompt,
                 image_data,
-                kie_source_ref=kie_source_ref,
+                kie_source_ref=kie_ref,
                 status_msg=status_msg,
                 status_label=status_label,
                 status_parse_mode="HTML",
@@ -1985,7 +2007,7 @@ async def _run_variables_batch(
                 prompt=prompt,
                 mode="edit",
                 source_file_id=source_file_id,
-                kie_source_ref=kie_source_ref,
+                kie_source_ref=kie_ref,
             )
             if use_comfyui:
                 await _send_comfyui_output(
@@ -2005,7 +2027,7 @@ async def _run_variables_batch(
                     status_msg,
                     message,
                     f"Variables {i}/{count}",
-                    download_allowlist=_download_allowlist_for_provider("kie"),
+                    download_allowlist=_download_allowlist_for_provider(model.get("provider")),
                     kie_meta=kie_meta,
                     regen_context=regen_context,
                     delete_status=False,
@@ -2065,11 +2087,11 @@ async def cmd_variables_reply(message: types.Message) -> None:
     if not message.reply_to_message or not message.reply_to_message.photo:
         await message.answer("Responde a una foto para editarla con /variables.")
         return
-    # Prefer the full-resolution Kie task ref for bot-generated images; fall
-    # back to downloading the replied photo from Telegram.
-    kie_source_ref = _resolve_reply_kie_ref(message.reply_to_message)
+    kie_source_ref = None
     image_data = None
     source_file_id = None
+    if get_model(message.from_user.id).get("provider") == "kie":
+        kie_source_ref = _resolve_reply_kie_ref(message.reply_to_message)
     if kie_source_ref is None:
         image_data = await _download_telegram_photo(message.reply_to_message.photo[-1])
         source_file_id = message.reply_to_message.photo[-1].file_id
