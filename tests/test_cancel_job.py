@@ -274,3 +274,29 @@ async def test_cancel_keyboard_has_button():
     kb = bot._cancel_job_keyboard()
     assert kb.inline_keyboard[0][0].callback_data == "cancel_job"
     assert "Cancelar" in kb.inline_keyboard[0][0].text
+
+
+@pytest.mark.asyncio
+async def test_retry_status_preserves_cancel_keyboard():
+    """The Cancel button must survive retry status edits (regression: it was dropped
+    on the first retry because the retry edit omitted reply_markup)."""
+    status = _status_message()
+    kb = bot._cancel_job_keyboard()
+    status.reply_markup = kb
+
+    await bot._update_retry_status(status, "Editando imagen...", None, 1)
+
+    status.edit_text.assert_awaited_once()
+    assert status.edit_text.await_args.kwargs.get("reply_markup") is kb
+    assert status.edit_text.await_args.kwargs.get("parse_mode") is None
+
+
+@pytest.mark.asyncio
+async def test_retry_status_without_keyboard_stays_buttonless():
+    status = _status_message()
+    status.reply_markup = None
+
+    await bot._update_retry_status(status, "Generando imagen...", None, 2)
+
+    status.edit_text.assert_awaited_once()
+    assert status.edit_text.await_args.kwargs.get("reply_markup") is None

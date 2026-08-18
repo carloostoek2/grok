@@ -3825,10 +3825,14 @@ async def _update_retry_status(
 ) -> None:
     if status_msg is None or not status_label:
         return
+    # Telegram drops the inline keyboard when editMessageText omits reply_markup,
+    # so the Cancel button would vanish on the first retry. Re-apply the current
+    # one (the local Message object keeps its original keyboard across edits).
     await safe_edit_text(
         status_msg,
         _retry_status_text(status_label, attempt),
         parse_mode=status_parse_mode,
+        reply_markup=status_msg.reply_markup,
     )
 
 
