@@ -423,46 +423,71 @@ def _confirmation_keyboard() -> InlineKeyboardMarkup:
 
 
 # In-flight cancellable jobs (per user). Cooperative cancel: checked between
-# batch items / after long awaits. One active job per user.
-_active_jobs: dict[int, dict] = {}
+# batch items / after long awaits. Up to MAX_ACTIVE_JOBS_PER_USER at once.
+MAX_ACTIVE_JOBS_PER_USER = 3
+_JOBS_FULL_MSG = (
+    "Ya hay 3 procesos en curso. Espera a que termine uno o cancélalo."
+)
+_active_jobs: dict[int, list[dict]] = {}
 
 
-def _cancel_job_keyboard() -> InlineKeyboardMarkup:
+def _cancel_job_keyboard(event: asyncio.Event | None = None) -> InlineKeyboardMarkup:
+    job_id = getattr(event, "job_id", None) if event is not None else None
+    data = f"cancel_job:{job_id}" if job_id else "cancel_job"
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Cancelar", callback_data="cancel_job")],
+            [InlineKeyboardButton(text="Cancelar", callback_data=data)],
         ]
     )
 
 
-def _start_job(user_id: int, kind: str) -> asyncio.Event:
-    """Register a cancellable job. Cancels any previous job for this user."""
-    prev = _active_jobs.get(user_id)
-    if prev is not None:
-        prev["event"].set()
+def _start_job(user_id: int, kind: str) -> asyncio.Event | None:
+    """Register a cancellable job. Does not cancel other jobs for this user.
+
+    Returns None when the user already has MAX_ACTIVE_JOBS_PER_USER running.
+    """
+    jobs = _active_jobs.setdefault(user_id, [])
+    if len(jobs) >= MAX_ACTIVE_JOBS_PER_USER:
+        return None
     event = asyncio.Event()
-    _active_jobs[user_id] = {"event": event, "kind": kind}
+    job_id = uuid.uuid4().hex[:8]
+    event.job_id = job_id
+    jobs.append({"id": job_id, "event": event, "kind": kind})
     return event
 
 
-def _job_cancelled(event: asyncio.Event) -> bool:
-    return event.is_set()
+def _job_cancelled(event: asyncio.Event | None) -> bool:
+    return bool(event is not None and event.is_set())
 
 
-def _request_cancel_job(user_id: int) -> bool:
-    job = _active_jobs.get(user_id)
-    if job is None:
+def _request_cancel_job(user_id: int, job_id: str | None = None) -> bool:
+    jobs = _active_jobs.get(user_id) or []
+    if not jobs:
         return False
-    job["event"].set()
+    if job_id:
+        for job in jobs:
+            if job["id"] == job_id:
+                job["event"].set()
+                return True
+        return False
+    for job in reversed(jobs):
+        if not job["event"].is_set():
+            job["event"].set()
+            return True
+    jobs[-1]["event"].set()
     return True
 
 
-def _finish_job(user_id: int, event: asyncio.Event) -> None:
-    job = _active_jobs.get(user_id)
-    if job is None:
+def _finish_job(user_id: int, event: asyncio.Event | None) -> None:
+    if event is None:
         return
-    # Only clear if this is still the active registration (not superseded).
-    if job["event"] is event:
+    jobs = _active_jobs.get(user_id)
+    if not jobs:
+        return
+    remaining = [job for job in jobs if job["event"] is not event]
+    if remaining:
+        _active_jobs[user_id] = remaining
+    else:
         _active_jobs.pop(user_id, None)
 
 
@@ -1067,10 +1092,12 @@ def _video_config_summary(user_id: int) -> str:
     return summary
 
 
-@dp.callback_query(lambda c: c.data == "cancel_job")
+@dp.callback_query(lambda c: bool(c.data) and c.data.startswith("cancel_job"))
 async def handle_cancel_job(callback: types.CallbackQuery):
     """Cancel an in-flight faceswap / image-edit / regenerate job."""
-    if _request_cancel_job(callback.from_user.id):
+    data = callback.data or ""
+    job_id = data.split(":", 1)[1] if data.startswith("cancel_job:") else None
+    if _request_cancel_job(callback.from_user.id, job_id=job_id):
         await callback.answer("Cancelando…")
         # Running loop will update final status; soft-signal on the message.
         if callback.message is not None:
@@ -1181,9 +1208,12 @@ async def handle_regenerate_image(callback: types.CallbackQuery):
 
     uid = callback.from_user.id
     cancel_event = _start_job(uid, "regen")
+    if cancel_event is None:
+        await callback.answer(_JOBS_FULL_MSG, show_alert=True)
+        return
     status_msg = await callback.message.answer(
         f"Regenerando imagen con {model['name']}...",
-        reply_markup=_cancel_job_keyboard(),
+        reply_markup=_cancel_job_keyboard(cancel_event),
     )
     image_data = None
     reference_image = None
@@ -1571,6 +1601,9 @@ async def _process_single_photo_edit(
                 return False
 
         cancel_event = _start_job(uid, "edit")
+        if cancel_event is None:
+            await message.answer(_JOBS_FULL_MSG)
+            return False
         status_label = (
             "Editando imagen (referencia+foto)..."
             if integrate_mode
@@ -1578,7 +1611,7 @@ async def _process_single_photo_edit(
         )
         status_msg = await message.answer(
             status_label,
-            reply_markup=_cancel_job_keyboard(),
+            reply_markup=_cancel_job_keyboard(cancel_event),
         )
         if _job_cancelled(cancel_event):
             await status_msg.edit_text("⏹ Edición cancelada.", reply_markup=None)
@@ -1666,6 +1699,9 @@ async def _process_album_edit_from_file_ids(
     status_msg = None
     reference_image = None
     cancel_event = _start_job(uid, "album_edit")
+    if cancel_event is None:
+        await anchor_message.answer(_JOBS_FULL_MSG)
+        return False
     completed = 0
 
     if integrate_mode:
@@ -1679,12 +1715,12 @@ async def _process_album_edit_from_file_ids(
         if integrate_mode:
             status_msg = await anchor_message.reply(
                 f"Integrando referencia 0/{n} imágenes ({backend})...",
-                reply_markup=_cancel_job_keyboard(),
+                reply_markup=_cancel_job_keyboard(cancel_event),
             )
         else:
             status_msg = await anchor_message.reply(
                 f"Editando 0/{n} imágenes con {model['name']} ({backend})...",
-                reply_markup=_cancel_job_keyboard(),
+                reply_markup=_cancel_job_keyboard(cancel_event),
             )
 
         for i, file_id in enumerate(file_ids, 1):
@@ -1701,7 +1737,7 @@ async def _process_album_edit_from_file_ids(
                 status_label = f"Editando {i}/{n} imágenes con {model['name']} ({backend})..."
             await status_msg.edit_text(
                 status_label,
-                reply_markup=_cancel_job_keyboard(),
+                reply_markup=_cancel_job_keyboard(cancel_event),
             )
             image_data = await _download_telegram_file_id(file_id)
             if _job_cancelled(cancel_event):
@@ -1910,6 +1946,14 @@ def _variables_model_or_reject(uid: int) -> tuple[dict | None, str | None]:
     return model, None
 
 
+def _variables_batch_summary(completed: int, failed: int, count: int) -> str:
+    if failed == 0:
+        return f"✅ Listo: {completed}/{count} imágenes generadas."
+    err_label = "error" if failed == 1 else "errores"
+    icon = "✅" if completed else "⚠️"
+    return f"{icon} Listo: {completed}/{count} imágenes generadas ({failed} {err_label})."
+
+
 async def _run_variables_batch(
     message: types.Message,
     count: int,
@@ -1921,8 +1965,8 @@ async def _run_variables_batch(
     """Run `count` image edits on the user's configured image model.
 
     Always uses the original source image (never chains results), relaunching
-    automatically after each result arrives. The batch is cancellable and stops
-    on the first provider error.
+    automatically after each result arrives. The batch is cancellable. A
+    failed item is skipped and the remaining generations still run.
     """
     uid = message.from_user.id
     model, reject_msg = _variables_model_or_reject(uid)
@@ -1942,14 +1986,18 @@ async def _run_variables_batch(
             return
 
     cancel_event = _start_job(uid, "variables")
+    if cancel_event is None:
+        await message.answer(_JOBS_FULL_MSG)
+        return
     status_msg = None
     used_combos: set[tuple[str, str, str]] = set()
     completed = 0
+    failed = 0
     try:
         status_msg = await message.answer(
             f"🎲 <b>Variables</b>: editando 0/{count} imágenes con {model['name']}...",
             parse_mode="HTML",
-            reply_markup=_cancel_job_keyboard(),
+            reply_markup=_cancel_job_keyboard(cancel_event),
         )
         for i in range(1, count + 1):
             if _job_cancelled(cancel_event):
@@ -1964,7 +2012,7 @@ async def _run_variables_batch(
             await status_msg.edit_text(
                 status_label,
                 parse_mode="HTML",
-                reply_markup=_cancel_job_keyboard(),
+                reply_markup=_cancel_job_keyboard(cancel_event),
             )
             combo = variables_store.random_combination(exclude=used_combos)
             if combo is None:
@@ -1980,71 +2028,90 @@ async def _run_variables_batch(
                 image_data.seek(0)
             kie_ref = kie_source_ref if model.get("provider") == "kie" else None
 
-            output, err, kie_meta = await generate_image(
-                model,
-                prompt,
-                image_data,
-                kie_source_ref=kie_ref,
-                status_msg=status_msg,
-                status_label=status_label,
-                status_parse_mode="HTML",
-            )
-            if _job_cancelled(cancel_event):
-                await status_msg.edit_text(
-                    f"⏹ Cancelado. Completadas {completed}/{count} imágenes.",
-                    reply_markup=None,
-                )
-                return
-            if err:
-                await status_msg.edit_text(
-                    f"Error en la imagen {i}/{count}: {err}",
-                    reply_markup=None,
-                )
-                return
-            regen_context = _build_image_regen_context(
-                model=model,
-                user_id=uid,
-                prompt=prompt,
-                mode="edit",
-                source_file_id=source_file_id,
-                kie_source_ref=kie_ref,
-            )
-            if use_comfyui:
-                await _send_comfyui_output(
+            try:
+                output, err, meta = await generate_image(
                     model,
-                    output,
                     prompt,
-                    status_msg,
-                    message,
-                    f"Variables {i}/{count}",
-                    regen_context,
-                    delete_status=False,
+                    image_data,
+                    kie_source_ref=kie_ref,
+                    status_msg=status_msg,
+                    status_label=status_label,
+                    status_parse_mode="HTML",
                 )
-            else:
-                await process_image_result(
-                    output,
-                    prompt,
-                    status_msg,
-                    message,
-                    f"Variables {i}/{count}",
-                    download_allowlist=_download_allowlist_for_provider(model.get("provider")),
-                    kie_meta=kie_meta,
-                    regen_context=regen_context,
-                    delete_status=False,
+                if _job_cancelled(cancel_event):
+                    await status_msg.edit_text(
+                        f"⏹ Cancelado. Completadas {completed}/{count} imágenes.",
+                        reply_markup=None,
+                    )
+                    return
+                if err and meta and meta.get("exhausted"):
+                    if image_data is not None:
+                        image_data.seek(0)
+                    shuffled_prompt = variables_store.build_prompt_shuffled(*combo_tuple)
+                    output, err, meta = await generate_image(
+                        model,
+                        shuffled_prompt,
+                        image_data,
+                        kie_source_ref=kie_ref,
+                        status_msg=status_msg,
+                        status_label=status_label,
+                        status_parse_mode="HTML",
+                    )
+                    if _job_cancelled(cancel_event):
+                        await status_msg.edit_text(
+                            f"⏹ Cancelado. Completadas {completed}/{count} imágenes.",
+                            reply_markup=None,
+                        )
+                        return
+                    if err and meta and meta.get("exhausted"):
+                        variables_store.blacklist_add(variables_store.combo_key(*combo_tuple))
+                        failed += 1
+                        continue
+                    prompt = shuffled_prompt
+                if err:
+                    failed += 1
+                    continue
+                regen_context = _build_image_regen_context(
                     model=model,
+                    user_id=uid,
+                    prompt=prompt,
+                    mode="edit",
+                    source_file_id=source_file_id,
+                    kie_source_ref=kie_ref,
                 )
-            completed = i
+                if use_comfyui:
+                    await _send_comfyui_output(
+                        model,
+                        output,
+                        prompt,
+                        status_msg,
+                        message,
+                        f"Variables {i}/{count}",
+                        regen_context,
+                        delete_status=False,
+                    )
+                else:
+                    await process_image_result(
+                        output,
+                        prompt,
+                        status_msg,
+                        message,
+                        f"Variables {i}/{count}",
+                        download_allowlist=_download_allowlist_for_provider(model.get("provider")),
+                        kie_meta=meta,
+                        regen_context=regen_context,
+                        delete_status=False,
+                        model=model,
+                    )
+            except Exception:
+                failed += 1
+                continue
+            completed += 1
 
         await status_msg.edit_text(
-            f"✅ Listo: {completed}/{count} imágenes generadas.",
+            _variables_batch_summary(completed, failed, count),
             reply_markup=None,
         )
-    except replicate.exceptions.ReplicateError as e:
-        backend = _prov_label(model.get("provider", "?"))
-        if status_msg:
-            await status_msg.edit_text(f"Error de {backend}: {e}", reply_markup=None)
-        else:
-            await message.answer(f"Error de {backend}: {e}")
     except Exception as e:
         if status_msg:
             await status_msg.edit_text(f"Error inesperado: {e}", reply_markup=None)
@@ -2652,17 +2719,23 @@ async def _execute_faceswap_single(
         return
 
     cancel_event = _start_job(user_id, "faceswap")
+    if cancel_event is None:
+        if status_msg:
+            await safe_edit_text(status_msg, _JOBS_FULL_MSG, reply_markup=None)
+        else:
+            await anchor_message.answer(_JOBS_FULL_MSG)
+        return
     progress_text = _faceswap_progress_message(0, 1, current=1)
     if status_msg is None:
         status_msg = await anchor_message.answer(
             progress_text,
-            reply_markup=_cancel_job_keyboard(),
+            reply_markup=_cancel_job_keyboard(cancel_event),
         )
     else:
         await safe_edit_text(
             status_msg,
             progress_text,
-            reply_markup=_cancel_job_keyboard(),
+            reply_markup=_cancel_job_keyboard(cancel_event),
         )
 
     temp_input = Path(tempfile.mkdtemp(prefix="fs_single_"))
@@ -2756,17 +2829,23 @@ async def _execute_faceswap_batch(
 
     count = len(file_ids)
     cancel_event = _start_job(user_id, "faceswap")
+    if cancel_event is None:
+        if status_msg:
+            await safe_edit_text(status_msg, _JOBS_FULL_MSG, reply_markup=None)
+        else:
+            await anchor_message.answer(_JOBS_FULL_MSG)
+        return
     initial_status = _faceswap_progress_message(0, count, current=1 if count else None)
     if status_msg is None:
         status_msg = await anchor_message.reply(
             initial_status,
-            reply_markup=_cancel_job_keyboard(),
+            reply_markup=_cancel_job_keyboard(cancel_event),
         )
     else:
         await safe_edit_text(
             status_msg,
             initial_status,
-            reply_markup=_cancel_job_keyboard(),
+            reply_markup=_cancel_job_keyboard(cancel_event),
         )
 
     temp_root = Path(tempfile.mkdtemp(prefix="fs_album_"))
@@ -2792,7 +2871,7 @@ async def _execute_faceswap_batch(
             await safe_edit_text(
                 status_msg,
                 _faceswap_progress_message(i - 1, count, current=i),
-                reply_markup=_cancel_job_keyboard(),
+                reply_markup=_cancel_job_keyboard(cancel_event),
             )
             _log_faceswap_progress(user_id, i - 1, count, current=i, outcome="start")
             target_path = None
@@ -2818,7 +2897,7 @@ async def _execute_faceswap_batch(
                 await safe_edit_text(
                     status_msg,
                     _faceswap_progress_message(i, count),
-                    reply_markup=_cancel_job_keyboard(),
+                    reply_markup=_cancel_job_keyboard(cancel_event),
                 )
                 _log_faceswap_progress(
                     user_id,
@@ -3018,25 +3097,57 @@ async def generate_image(
         f"has_image={image_data is not None} has_ref={reference_image is not None} "
         f"kie_ref={kie_source_ref is not None}"
     )
+    last_err: str | None = None
+    for attempt in range(GENERATE_MAX_RETRIES + 1):
+        if attempt > 0:
+            print(f"[generate] retry attempt {attempt}/{GENERATE_MAX_RETRIES} provider={prov}")
+        if image_data is not None:
+            image_data.seek(0)
+        try:
+            output, err, meta = await _generate_once(
+                model,
+                prompt,
+                image_data,
+                reference_image=reference_image,
+                kie_source_ref=kie_source_ref,
+            )
+        except Exception as exc:
+            output, err, meta = None, f"Error de {_prov_label(prov)}: {exc}", None
+        if err is None:
+            return output, None, meta
+        if meta and meta.get("retryable") is False:
+            return None, err, meta
+        last_err = err
+        if attempt < GENERATE_MAX_RETRIES:
+            await _update_retry_status(status_msg, status_label, status_parse_mode, attempt)
+            await asyncio.sleep(_retry_backoff(attempt))
+    return None, last_err, {"exhausted": True, "provider": prov}
+
+
+async def _generate_once(
+    model: dict,
+    prompt: str,
+    image_data: BytesIO | None = None,
+    *,
+    reference_image: BytesIO | None = None,
+    kie_source_ref: dict | None = None,
+) -> tuple[object | None, str | None, dict | None]:
+    """Single generation attempt against the provider selected by model["provider"]."""
+    prov = model.get("provider", "?")
     if prov == "xai":
         output, err = await _generate_xai(
             model, prompt, image_data, reference_image=reference_image
         )
         return output, err, None
     if prov == "kie":
-        return await _generate_kie(
+        return await _generate_kie_once(
             model,
             prompt,
             image_data,
             kie_source_ref=kie_source_ref,
-            status_msg=status_msg,
-            status_label=status_label,
-            status_parse_mode=status_parse_mode,
         )
     if prov == "comfyui":
-        path, err = await _generate_comfyui(
-            model, prompt, image_data, status_msg=status_msg
-        )
+        path, err = await _generate_comfyui(model, prompt, image_data)
         return path, err, None
     output, err = await _generate_replicate(model, prompt, image_data)
     return output, err, None
@@ -3701,12 +3812,12 @@ async def _kie_get_result_url_at_index(
     return result_url, None
 
 
-def _kie_retry_status_text(status_label: str, attempt: int) -> str:
-    """Append the current attempt number to a Kie status message during retries."""
+def _retry_status_text(status_label: str, attempt: int) -> str:
+    """Append the current attempt number to a status message during retries."""
     return f"{status_label} (intento {attempt + 2}/{GENERATE_MAX_RETRIES + 1})"
 
 
-async def _kie_update_retry_status(
+async def _update_retry_status(
     status_msg: types.Message | None,
     status_label: str,
     status_parse_mode: str | None,
@@ -3716,25 +3827,26 @@ async def _kie_update_retry_status(
         return
     await safe_edit_text(
         status_msg,
-        _kie_retry_status_text(status_label, attempt),
+        _retry_status_text(status_label, attempt),
         parse_mode=status_parse_mode,
     )
 
 
-async def _generate_kie(
+async def _generate_kie_once(
     model: dict,
     prompt: str,
     image_data: BytesIO | None = None,
     *,
     kie_source_ref: dict | None = None,
-    status_msg: types.Message | None = None,
-    status_label: str = "",
-    status_parse_mode: str | None = None,
 ) -> tuple[object | None, str | None, dict | None]:
-    if not KIE_API_KEY:
-        return None, _KIE_NOT_CONFIGURED_MSG, None
+    """Single Kie generation attempt (no retry loop — the loop lives in generate_image).
 
-    source_index = 0
+    Precondition failures (missing API key, unresolved reference, oversized image)
+    return meta={"retryable": False} so the caller short-circuits; generation
+    failures return meta=None (retryable).
+    """
+    if not KIE_API_KEY:
+        return None, _KIE_NOT_CONFIGURED_MSG, {"retryable": False}
 
     source_image_url: str | None = None
     if kie_source_ref:
@@ -3746,82 +3858,58 @@ async def _generate_kie(
                 source_index,
             )
             if ref_err:
-                return None, ref_err, None
+                return None, ref_err, {"retryable": False}
 
     if image_data and not kie_source_ref:
         size_err = _validate_image_for_i2v(image_data)
         if size_err:
-            return None, size_err, None
+            return None, size_err, {"retryable": False}
 
-    last_err: str | None = None
     is_image_task = bool(kie_source_ref or image_data)
     poll_timeout = IMAGE_MAX_POLL_SEC if is_image_task else VIDEO_MAX_POLL_SEC
 
-    for attempt in range(GENERATE_MAX_RETRIES + 1):
-        if attempt > 0:
-            print(f"[kie generate] retry attempt {attempt}/{GENERATE_MAX_RETRIES}")
-        async with aiohttp.ClientSession(timeout=KIE_REQUEST_TIMEOUT) as session:
-            if kie_source_ref:
-                input_data: dict = {
-                    "image_urls": [source_image_url],
-                    "prompt": prompt,
-                    "enable_pro": True,
-                    "nsfw_checker": False,
-                    "mode": "spicy",
-                }
-                model_slug = KIE_IMAGE_I2I
-            elif image_data:
-                image_data.seek(0)
-                image_url, upload_err = await _kie_upload_image(session, image_data)
-                if upload_err:
-                    last_err = upload_err
-                    if attempt < GENERATE_MAX_RETRIES:
-                        print(f"[kie generate] upload attempt {attempt+1} failed, retrying...")
-                        await _kie_update_retry_status(status_msg, status_label, status_parse_mode, attempt)
-                        await asyncio.sleep(_retry_backoff(attempt))
-                        continue
-                    return None, last_err, None
-                input_data = {
-                    "image_urls": [image_url],
-                    "prompt": prompt,
-                    "enable_pro": True,
-                    "nsfw_checker": False,
-                    "mode": "normal",
-                }
-                model_slug = KIE_IMAGE_I2I
-            else:
-                input_data = {
-                    "prompt": prompt,
-                    "aspect_ratio": sessions.DEFAULT_IMAGE_ASPECT_RATIO,
-                    "enable_pro": True,
-                    "nsfw_checker": False,
-                }
-                model_slug = model["id"]
+    async with aiohttp.ClientSession(timeout=KIE_REQUEST_TIMEOUT) as session:
+        if kie_source_ref:
+            input_data: dict = {
+                "image_urls": [source_image_url],
+                "prompt": prompt,
+                "enable_pro": True,
+                "nsfw_checker": False,
+                "mode": "spicy",
+            }
+            model_slug = KIE_IMAGE_I2I
+        elif image_data:
+            image_data.seek(0)
+            image_url, upload_err = await _kie_upload_image(session, image_data)
+            if upload_err:
+                return None, upload_err, None
+            input_data = {
+                "image_urls": [image_url],
+                "prompt": prompt,
+                "enable_pro": True,
+                "nsfw_checker": False,
+                "mode": "normal",
+            }
+            model_slug = KIE_IMAGE_I2I
+        else:
+            input_data = {
+                "prompt": prompt,
+                "aspect_ratio": sessions.DEFAULT_IMAGE_ASPECT_RATIO,
+                "enable_pro": True,
+                "nsfw_checker": False,
+            }
+            model_slug = model["id"]
 
-            task_id, create_err = await _kie_create_task(session, model_slug, input_data)
-            if create_err:
-                last_err = create_err
-                if attempt < GENERATE_MAX_RETRIES:
-                    print(f"[kie generate] create task attempt {attempt+1} failed, retrying...")
-                    await _kie_update_retry_status(status_msg, status_label, status_parse_mode, attempt)
-                    await asyncio.sleep(_retry_backoff(attempt))
-                    continue
-                return None, last_err, None
+        task_id, create_err = await _kie_create_task(session, model_slug, input_data)
+        if create_err:
+            return None, create_err, None
 
-            result_urls, poll_err = await _kie_poll_task(session, task_id, max_poll_sec=poll_timeout)
-            if poll_err:
-                last_err = poll_err
-                if attempt < GENERATE_MAX_RETRIES:
-                    print(f"[kie generate] poll attempt {attempt+1} failed ({poll_err}), retrying...")
-                    await _kie_update_retry_status(status_msg, status_label, status_parse_mode, attempt)
-                    await asyncio.sleep(_retry_backoff(attempt))
-                    continue
-                return None, last_err, None
+        result_urls, poll_err = await _kie_poll_task(session, task_id, max_poll_sec=poll_timeout)
+        if poll_err:
+            return None, poll_err, None
 
-            kie_meta = {"task_id": task_id, "index": 0, "provider": "kie"}
-            return result_urls, None, kie_meta
-
-    return None, last_err or _kie_user_error("generación"), None
+        kie_meta = {"task_id": task_id, "index": 0, "provider": "kie"}
+        return result_urls, None, kie_meta
 
 
 def _normalize_image_urls(output) -> list[str]:

@@ -130,3 +130,66 @@ def test_random_combination_returns_none_on_empty_list(variables_file):
     while variables_store.delete_item("poses", 0):
         pass
     assert variables_store.random_combination() is None
+
+
+def test_template_fields_returns_placeholder_names(variables_file):
+    assert variables_store.template_fields() == ["pose", "angle", "action"]
+
+
+def test_template_fields_tracks_custom_template(variables_file):
+    variables_store.set_template("{pose} {angle}")
+    assert variables_store.template_fields() == ["pose", "angle"]
+
+
+def test_combo_key_tracks_only_template_fields(variables_file):
+    variables_store.set_template("{pose} {angle}")
+    assert variables_store.combo_key("de pie", "de frente", "mirando") == ("de pie", "de frente")
+
+
+def test_combo_key_default_template_keeps_all_three(variables_file):
+    assert variables_store.combo_key("a", "b", "c") == ("a", "b", "c")
+
+
+def test_build_prompt_shuffled_swaps_two_fields(variables_file):
+    variables_store.set_template("{pose} {angle}")
+    # With exactly two contributing fields the derangement is a guaranteed swap.
+    assert variables_store.build_prompt_shuffled("A", "B", "ignored") == "B A"
+
+
+def test_build_prompt_shuffled_preserves_values(variables_file):
+    variables_store.set_template("{pose} {angle} {action}")
+    with patch("variables_store.random.shuffle", side_effect=lambda x: x.reverse()):
+        prompt = variables_store.build_prompt_shuffled("A", "B", "C")
+    # All three values still render, just in a different order.
+    assert set(prompt.split()) == {"A", "B", "C"}
+    assert prompt == "C B A"
+
+
+def test_blacklist_add_get_persist(variables_file):
+    assert variables_store.blacklist_add(("de pie", "de frente"))
+    assert ("de pie", "de frente") in variables_store.get_blacklist()
+    # persisted on disk, not just in memory
+    raw = variables_store._load()
+    assert ["de pie", "de frente"] in raw["blacklist"]
+
+
+def test_blacklist_add_rejects_duplicate_and_invalid(variables_file):
+    assert variables_store.blacklist_add(("a", "b")) is True
+    assert variables_store.blacklist_add(("a", "b")) is False  # duplicate
+    assert variables_store.blacklist_add("not-a-tuple") is False  # invalid
+
+
+def test_blacklist_clear_empties(variables_file):
+    variables_store.blacklist_add(("a", "b"))
+    variables_store.blacklist_clear()
+    assert variables_store.get_blacklist() == set()
+
+
+def test_random_combination_excludes_blacklist(variables_file):
+    variables_store.blacklist_add(("de pie", "lateral", "mirando a la cámara"))
+    with patch(
+        "variables_store.random.choice",
+        side_effect=["de pie", "lateral", "mirando a la cámara", "sentado", "cenital", "saltando"],
+    ):
+        prompt, combo = variables_store.random_combination()
+    assert combo == ("sentado", "cenital", "saltando")

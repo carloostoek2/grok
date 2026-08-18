@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 import threading
 from pathlib import Path
 
@@ -56,6 +57,12 @@ DEFAULT_LISTS: dict[str, list[str]] = {
 
 # Maximum random draws when trying to avoid repeating a combination within a batch.
 MAX_COMBO_ATTEMPTS = 30
+
+# Positional index of each field within a (pose, angle, action) combo tuple.
+_FIELD_INDEX = {"pose": 0, "angle": 1, "action": 2}
+
+# Matches named template placeholders like {pose}, {angle}, {action}.
+_PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 
 
 def _load() -> dict:
@@ -99,6 +106,9 @@ def _ensure_full(data: dict) -> bool:
             changed = True
     if not isinstance(data.get("template"), str) or not data["template"].strip():
         data["template"] = DEFAULT_TEMPLATE
+        changed = True
+    if not isinstance(data.get("blacklist"), list):
+        data["blacklist"] = []
         changed = True
     return changed
 
@@ -217,6 +227,48 @@ def build_prompt(pose: str, angle: str, action: str) -> str:
         return f"{pose}, {angle}, {action}"
 
 
+def template_fields(template: str | None = None) -> list[str]:
+    """Placeholder field names in the template, in order of appearance."""
+    tpl = template if template is not None else get_template()
+    return _PLACEHOLDER_RE.findall(tpl)
+
+
+def combo_key(pose: str, angle: str, action: str) -> tuple:
+    """Ordered tuple of the values that actually render into the prompt.
+
+    Only the fields the template references contribute, so the key identifies the
+    combination by its prompt content (e.g. ``(pose, angle)`` when the template
+    drops ``{action}``), independent of the action list.
+    """
+    values = {"pose": pose, "angle": angle, "action": action}
+    return tuple(values.get(f, "") for f in template_fields())
+
+
+def _render_positional(template: str, values: list[str]) -> str:
+    """Render the template with `values` filling its placeholders left to right."""
+    positional = _PLACEHOLDER_RE.sub("{}", template)
+    try:
+        return positional.format(*values)
+    except (IndexError, ValueError, AttributeError):
+        return ", ".join(values)
+
+
+def build_prompt_shuffled(pose: str, angle: str, action: str) -> str:
+    """Render the template with the contributing values in a different order.
+
+    Guarantees a derangement (order differs from the canonical template order) when
+    two or more fields contribute; with two fields this is a plain swap.
+    """
+    values = {"pose": pose, "angle": angle, "action": action}
+    ordered = [values.get(f, "") for f in template_fields()]
+    if len(ordered) >= 2:
+        canonical = list(ordered)
+        random.shuffle(ordered)
+        if ordered == canonical:
+            ordered.reverse()
+    return _render_positional(get_template(), ordered)
+
+
 def random_combination(exclude: set[tuple[str, str, str]] | None = None) -> tuple[str, tuple[str, str, str]] | None:
     """Pick a random (pose, angle, action) combo, avoiding `exclude` when possible.
 
@@ -227,13 +279,14 @@ def random_combination(exclude: set[tuple[str, str, str]] | None = None) -> tupl
         if not lists[name]:
             return None
     exclude = exclude or set()
+    blacklist = get_blacklist()
     for _ in range(MAX_COMBO_ATTEMPTS):
         combo = (
             random.choice(lists["poses"]),
             random.choice(lists["angles"]),
             random.choice(lists["actions"]),
         )
-        if combo not in exclude:
+        if combo not in exclude and combo_key(*combo) not in blacklist:
             break
     else:
         combo = (
@@ -247,3 +300,40 @@ def random_combination(exclude: set[tuple[str, str, str]] | None = None) -> tupl
 def combo_label(combo: tuple[str, str, str]) -> str:
     """Short human-readable label for a combo (used in status/result text)."""
     return ", ".join(combo)
+
+
+def get_blacklist() -> set[tuple]:
+    """Persistent set of combo keys marked as exhausted (never retry)."""
+    data = _data()
+    raw = data.get("blacklist", [])
+    out: set[tuple] = set()
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, list):
+                out.add(tuple(item))
+    return out
+
+
+def blacklist_add(key: tuple) -> bool:
+    """Persist a combo key to the blacklist. Returns False if invalid or already there."""
+    if not isinstance(key, tuple):
+        return False
+    entry = list(key)
+    with _LOCK:
+        data = _load()
+        _ensure_full(data)
+        blacklist = data["blacklist"]
+        if entry in blacklist:
+            return False
+        blacklist.append(entry)
+        _save(data)
+    return True
+
+
+def blacklist_clear() -> None:
+    """Remove all blacklisted combo keys."""
+    with _LOCK:
+        data = _load()
+        _ensure_full(data)
+        data["blacklist"] = []
+        _save(data)

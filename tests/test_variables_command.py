@@ -472,7 +472,7 @@ async def test_batch_reuses_original_image(sessions_file, variables_file):
     assert seen_images == [original, original]
 
 
-async def test_batch_stops_on_provider_error(sessions_file, variables_file):
+async def test_batch_continues_on_provider_error(sessions_file, variables_file):
     msg = _make_photo_message(caption="/variables 3")
     status = _make_status()
     msg.answer.return_value = status
@@ -485,17 +485,101 @@ async def test_batch_stops_on_provider_error(sessions_file, variables_file):
     combos = [
         ("ok1, b, c", ("ok1", "b", "c")),
         ("fail, e, f", ("fail", "e", "f")),
-        ("nunca, h, i", ("nunca", "h", "i")),
+        ("ok3, h, i", ("ok3", "h", "i")),
     ]
     with patch.object(bot, "generate_image", side_effect=_fake_gen) as mock_gen:
         with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
             with patch("variables_store.random_combination", side_effect=combos):
                 await bot._run_variables_batch(msg, 3, BytesIO(b"img"), None)
 
+    assert mock_gen.await_count == 3
+    assert mock_res.await_count == 2
+    last_text = status.edit_text.call_args.args[0]
+    assert "2/3" in last_text
+    assert "1 error" in last_text
+
+
+async def test_batch_continues_on_generate_exception(sessions_file, variables_file):
+    msg = _make_photo_message(caption="/variables 3")
+    status = _make_status()
+    msg.answer.return_value = status
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        if prompt.startswith("boom"):
+            raise RuntimeError("timeout del backend")
+        return ([RESULT_URL], None, {"task_id": "t", "index": 0, "provider": "kie"})
+
+    combos = [
+        ("ok1, b, c", ("ok1", "b", "c")),
+        ("boom, e, f", ("boom", "e", "f")),
+        ("ok3, h, i", ("ok3", "h", "i")),
+    ]
+    with patch.object(bot, "generate_image", side_effect=_fake_gen) as mock_gen:
+        with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
+            with patch("variables_store.random_combination", side_effect=combos):
+                await bot._run_variables_batch(msg, 3, BytesIO(b"img"), None)
+
+    assert mock_gen.await_count == 3
+    assert mock_res.await_count == 2
+    last_text = status.edit_text.call_args.args[0]
+    assert "2/3" in last_text
+    assert "1 error" in last_text
+
+
+async def test_batch_shuffles_and_retries_once_on_exhaustion(sessions_file, variables_file):
+    """On an exhausted provider, the batch swaps the contributing variables and
+    retries once; success on the shuffled prompt is delivered normally."""
+    variables_store.set_template("{pose} {angle}")
+    msg = _make_photo_message(caption="/variables 1")
+    msg.answer.return_value = _make_status()
+
+    prompts = []
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return (None, "negado", {"exhausted": True, "provider": "kie"})
+        return ([RESULT_URL], None, {"task_id": "t", "index": 0, "provider": "kie"})
+
+    with patch.object(bot, "generate_image", side_effect=_fake_gen) as mock_gen:
+        with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
+            with patch(
+                "variables_store.random_combination",
+                return_value=("de pie de frente", ("de pie", "de frente", "mirando")),
+            ):
+                await bot._run_variables_batch(msg, 1, BytesIO(b"img"), None)
+
     assert mock_gen.await_count == 2
+    assert prompts[0] == "de pie de frente"
+    assert prompts[1] == "de frente de pie"  # pose/angle swapped
     assert mock_res.await_count == 1
-    err_text = status.edit_text.call_args.args[0]
-    assert "Error del proveedor" in err_text
+    assert mock_res.await_args.args[1] == "de frente de pie"
+
+
+async def test_batch_blacklists_combo_on_second_exhaustion(sessions_file, variables_file):
+    """Two consecutive exhaustions mark the combo permanently and count a failure."""
+    variables_store.set_template("{pose} {angle}")
+    msg = _make_photo_message(caption="/variables 1")
+    status = _make_status()
+    msg.answer.return_value = status
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        return (None, "negado", {"exhausted": True, "provider": "kie"})
+
+    with patch.object(bot, "generate_image", side_effect=_fake_gen) as mock_gen:
+        with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
+            with patch(
+                "variables_store.random_combination",
+                return_value=("de pie de frente", ("de pie", "de frente", "mirando")),
+            ):
+                await bot._run_variables_batch(msg, 1, BytesIO(b"img"), None)
+
+    assert mock_gen.await_count == 2
+    assert mock_res.await_count == 0
+    assert ("de pie", "de frente") in variables_store.get_blacklist()
+    last_text = status.edit_text.call_args.args[0]
+    assert "0/1" in last_text
+    assert "1 error" in last_text
 
 
 async def test_batch_empty_list_guard(sessions_file, variables_file):
@@ -533,6 +617,60 @@ async def test_batch_cancel_stops_after_completed(sessions_file, variables_file)
                     await bot._run_variables_batch(msg, 5, BytesIO(b"img"), None)
 
     assert "Cancelado. Completadas 2/5" in status.edit_text.call_args.args[0]
+
+
+async def test_two_batches_run_without_cancelling_each_other(sessions_file, variables_file):
+    import asyncio
+
+    msg_a = _make_photo_message(caption="/variables 1", message_id=11)
+    msg_b = _make_photo_message(caption="/variables 1", message_id=12)
+    msg_a.answer.return_value = _make_status()
+    msg_b.answer.return_value = _make_status()
+    first_started = asyncio.Event()
+    release = asyncio.Event()
+    seen = []
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        seen.append(prompt)
+        if not first_started.is_set():
+            first_started.set()
+            await release.wait()
+        return ([RESULT_URL], None, {"task_id": "t", "index": 0, "provider": "kie"})
+
+    with patch.object(bot, "generate_image", side_effect=_fake_gen):
+        with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
+            with patch(
+                "variables_store.random_combination",
+                side_effect=[
+                    ("a, b, c", ("a", "b", "c")),
+                    ("d, e, f", ("d", "e", "f")),
+                ],
+            ):
+                task_a = asyncio.create_task(
+                    bot._run_variables_batch(msg_a, 1, BytesIO(b"img-a"), None)
+                )
+                await first_started.wait()
+                task_b = asyncio.create_task(
+                    bot._run_variables_batch(msg_b, 1, BytesIO(b"img-b"), None)
+                )
+                await asyncio.sleep(0)
+                release.set()
+                await asyncio.gather(task_a, task_b)
+
+    assert mock_res.await_count == 2
+    assert "Listo: 1/1" in msg_a.answer.return_value.edit_text.call_args.args[0]
+    assert "Listo: 1/1" in msg_b.answer.return_value.edit_text.call_args.args[0]
+
+
+async def test_batch_rejects_when_job_slots_full(sessions_file, variables_file):
+    uid = 1001
+    for _ in range(bot.MAX_ACTIVE_JOBS_PER_USER):
+        assert bot._start_job(uid, "edit") is not None
+    msg = _make_photo_message(caption="/variables 2")
+    with patch.object(bot, "generate_image", new_callable=AsyncMock) as mock_gen:
+        await bot._run_variables_batch(msg, 2, BytesIO(b"img"), None)
+    assert "3 procesos" in msg.answer.call_args.args[0]
+    mock_gen.assert_not_awaited()
 
 
 async def test_batch_no_kie_api_key(sessions_file, variables_file, monkeypatch):
