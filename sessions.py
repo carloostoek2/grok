@@ -24,8 +24,9 @@ VALID_GROK_IMAGINE_VARIANTS = ("standard", "quality")
 VALID_MODELS = ("grok", "seedream", "faceswap", "grok_video", "comfyui")
 DEFAULT_COMFYUI_MODEL = "krea2"
 DEFAULT_COMFYUI_LORA = "none"
+DEFAULT_COMFYUI_REFINE = "1"  # 1 = refinamiento final ON (FaceDetailer + upscale + refino RAW)
 VALID_COMFYUI_MODELS = ("qwen", "krea2", "krea2_raw", "krea2_moody", "wan_i2v")
-VALID_COMFYUI_LORAS = ("none", "lightning", "krea_nsfw", "krea_snapshot", "krea_both", "lightx2v", "multiangle", "multiangle_batch", "krea_edit", "krea_edit_nsfw", "krea_edit_snapshot", "krea_edit_both")
+VALID_COMFYUI_LORAS = ("none", "lightning", "krea_nsfw", "krea_snapshot", "krea_both", "lightx2v", "multiangle", "multiangle_batch", "krea_edit", "krea_edit_nsfw", "krea_edit_snapshot", "krea_edit_both", "krea_snofs", "qwen_snofs")
 DEFAULT_VIDEO_DURATION = 5
 DEFAULT_VIDEO_ASPECT_RATIO = "16:9"
 DEFAULT_VIDEO_RESOLUTION = "720p"
@@ -53,6 +54,7 @@ def _default_session_record(**overrides) -> dict:
         "grok_imagine_variant": DEFAULT_GROK_IMAGINE_VARIANT,
         "comfyui_model": DEFAULT_COMFYUI_MODEL,
         "comfyui_lora": DEFAULT_COMFYUI_LORA,
+        "comfyui_refine": DEFAULT_COMFYUI_REFINE,
         "video_duration": DEFAULT_VIDEO_DURATION,
         "video_aspect_ratio": DEFAULT_VIDEO_ASPECT_RATIO,
         "video_resolution": DEFAULT_VIDEO_RESOLUTION,
@@ -121,6 +123,9 @@ def _ensure_full(rec: dict) -> bool:
         changed = True
     if "comfyui_lora" not in rec:
         rec["comfyui_lora"] = DEFAULT_COMFYUI_LORA
+        changed = True
+    if "comfyui_refine" not in rec:
+        rec["comfyui_refine"] = DEFAULT_COMFYUI_REFINE
         changed = True
     if "integrate_ref_path" not in rec:
         rec["integrate_ref_path"] = None
@@ -381,20 +386,24 @@ def get_comfyui_config(user_id: int) -> dict:
     rec = get_session(user_id)
     cm = rec.get("comfyui_model", DEFAULT_COMFYUI_MODEL)
     cl = rec.get("comfyui_lora", DEFAULT_COMFYUI_LORA)
+    cr = rec.get("comfyui_refine", DEFAULT_COMFYUI_REFINE)
     return {
         "model": cm if cm in VALID_COMFYUI_MODELS else DEFAULT_COMFYUI_MODEL,
         "lora": cl if cl in VALID_COMFYUI_LORAS else DEFAULT_COMFYUI_LORA,
+        "refine": cr if cr in ("0", "1") else DEFAULT_COMFYUI_REFINE,
     }
 
 
 def set_comfyui_config(
-    user_id: int, *, model: str | None = None, lora: str | None = None
+    user_id: int, *, model: str | None = None, lora: str | None = None, refine: str | None = None
 ) -> None:
-    """Persist ComfyUI model variant and/or LoRA via the /config FSM."""
+    """Persist ComfyUI model variant and/or LoRA and/or refine via the /config FSM."""
     if model is not None and model not in VALID_COMFYUI_MODELS:
         model = DEFAULT_COMFYUI_MODEL
     if lora is not None and lora not in VALID_COMFYUI_LORAS:
         lora = DEFAULT_COMFYUI_LORA
+    if refine is not None and refine not in ("0", "1"):
+        refine = DEFAULT_COMFYUI_REFINE
     uid = str(user_id)
     sessions = _load()
     if uid not in sessions:
@@ -405,6 +414,8 @@ def set_comfyui_config(
         rec["comfyui_model"] = model
     if lora is not None:
         rec["comfyui_lora"] = lora
+    if refine is not None:
+        rec["comfyui_refine"] = refine
     _save(sessions)
 
 

@@ -42,6 +42,46 @@ async def test_cancel_job_with_no_active_job():
     assert "No hay proceso" in callback.answer.await_args.args[0]
 
 
+def test_start_job_keeps_previous_jobs():
+    uid = 5401
+    first = bot._start_job(uid, "variables")
+    second = bot._start_job(uid, "variables")
+    assert first is not None and second is not None
+    assert first is not second
+    assert not first.is_set()
+    assert not second.is_set()
+    assert len(bot._active_jobs[uid]) == 2
+
+
+def test_start_job_rejects_over_cap():
+    uid = 5402
+    started = [bot._start_job(uid, "edit") for _ in range(bot.MAX_ACTIVE_JOBS_PER_USER)]
+    assert all(event is not None for event in started)
+    assert bot._start_job(uid, "variables") is None
+    assert len(bot._active_jobs[uid]) == bot.MAX_ACTIVE_JOBS_PER_USER
+    assert all(not event.is_set() for event in started)
+
+
+def test_finish_job_removes_only_that_event():
+    uid = 5403
+    first = bot._start_job(uid, "edit")
+    second = bot._start_job(uid, "variables")
+    bot._finish_job(uid, first)
+    assert uid in bot._active_jobs
+    assert [job["event"] for job in bot._active_jobs[uid]] == [second]
+    bot._finish_job(uid, second)
+    assert uid not in bot._active_jobs
+
+
+def test_request_cancel_job_id_leaves_other_running():
+    uid = 5404
+    first = bot._start_job(uid, "variables")
+    second = bot._start_job(uid, "variables")
+    assert bot._request_cancel_job(uid, job_id=first.job_id)
+    assert first.is_set()
+    assert not second.is_set()
+
+
 @pytest.mark.asyncio
 async def test_cancel_job_sets_event():
     uid = 5002
@@ -274,6 +314,12 @@ async def test_cancel_keyboard_has_button():
     kb = bot._cancel_job_keyboard()
     assert kb.inline_keyboard[0][0].callback_data == "cancel_job"
     assert "Cancelar" in kb.inline_keyboard[0][0].text
+
+
+async def test_cancel_keyboard_includes_job_id():
+    event = bot._start_job(6001, "variables")
+    kb = bot._cancel_job_keyboard(event)
+    assert kb.inline_keyboard[0][0].callback_data == f"cancel_job:{event.job_id}"
 
 
 @pytest.mark.asyncio

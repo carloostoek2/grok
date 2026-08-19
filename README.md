@@ -33,7 +33,7 @@ Use `/config` (or `/video`) to change the model (`grok-imagine-video` base or `g
 
 - Send a photo with caption `/variables 5` (or reply to a photo with `/variables 5`) to generate 5 edits. `N` is clamped to 1–10.
 - Every iteration reuses the **original image** (results are never chained) and picks a fresh random pose/angle/action combo (repeating combos within a batch are avoided when possible).
-- Generations run sequentially and relaunch automatically after each result; the batch is cancellable with the inline Cancel button and stops on the first provider error.
+- Generations run sequentially and relaunch automatically after each result; the batch is cancellable with the inline Cancel button. A failed item is skipped and the rest of the batch still runs. Up to 3 jobs can run at the same time for one user; starting a fourth is rejected until a slot frees.
 - The `N` in the caption controls how many images to generate. Example: `/variables 3` → 3 independent edits, each with a different random combo.
 
 The lists and the prompt template are managed with `/listas` (Telegram admin panel, private chats only): add / edit / delete items per list and customize the template with the `{pose}`, `{angle}`, `{action}` placeholders. Lists persist in `variables_lists.json`.

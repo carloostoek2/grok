@@ -346,7 +346,7 @@ async def test_handle_text_collection_skips_confirm_flow(sessions_file):
     markup = kwargs.get("reply_markup")
     assert markup is not None
     buttons = [b.callback_data for row in markup.inline_keyboard for b in row]
-    assert "cancel_job" in buttons
+    assert any(data == "cancel_job" or data.startswith("cancel_job:") for data in buttons)
     assert "confirm:yes" not in buttons
 
 

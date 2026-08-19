@@ -142,14 +142,14 @@ GROK_IMAGINE_VARIANTS = {
     "standard": {
         "id": "grok-imagine-image",
         "replicate_id": "xai/grok-imagine-image",
-        "kie_id": "grok-imagine/text-to-image",
+        "kie_id": "grok-imagine-image-2-0/text-to-image",
         "label": "Estándar",
         "desc": "Rápido, ideal para prototipado y previews",
     },
     "quality": {
         "id": "grok-imagine-image-quality",
         "replicate_id": "xai/grok-imagine-image-quality",
-        "kie_id": "grok-imagine/text-to-image",
+        "kie_id": "grok-imagine-image-2-0/text-to-image",
         "label": "Alta calidad",
         "desc": "Mayor detalle, texto nítido, hasta 2K (recomendado para finales)",
     },
@@ -321,6 +321,8 @@ COMFYUI_CAPTION_LORA_LABELS = {
     "krea_nsfw": "NSFW V4",
     "krea_snapshot": "Realistic Snapshot",
     "krea_both": "NSFW V4 + Realistic Snapshot",
+    "krea_snofs": "SNOFS v1.3D",
+    "qwen_snofs": "SNOFS v1.3",
     "krea_edit": "✏️ Editar (Identity)",
     "krea_edit_nsfw": "✏️ Editar + NSFW",
     "krea_edit_snapshot": "✏️ Editar + Snapshot",
@@ -837,6 +839,7 @@ def get_model(user_id: int) -> dict:
         cc = sessions.get_comfyui_config(user_id)
         m["comfyui_model"] = cc["model"]
         m["comfyui_lora"] = cc["lora"]
+        m["comfyui_refine"] = cc["refine"]
         m["name"] = f"ComfyUI ({cc['model']} • lora {cc['lora']})"
         m["desc"] = (
             f"ComfyUI en la GPU — modelo {cc['model']}, LoRA {cc['lora']}"
@@ -3284,6 +3287,8 @@ async def _generate_comfyui(
         return None, err
     cm = model.get("comfyui_model", "krea2")
     cl = model.get("comfyui_lora", "none")
+    cr = model.get("comfyui_refine", "1")
+    refine_env = f"REFINE='{cr}' " if cr == "1" and cm != "wan_i2v" else ""
     try:
         if image_data is None:
             if cm == "wan_i2v":
@@ -3296,14 +3301,14 @@ async def _generate_comfyui(
                     "La edición de identidad necesita una foto de entrada:\n"
                     "envía la foto de la persona + el prompt de edición (o responde a una foto)."
                 )
-            cmd = f"MODEL='{cm}' LORA='{cl}' python3 /workspace/gen_comfy.py"
+            cmd = f"MODEL='{cm}' LORA='{cl}' {refine_env}python3 /workspace/gen_comfy.py"
             remotes = await _comfyui_run_remote(cmd, prompt)
         else:
             name = await _comfyui_upload(image_data)
             if not name:
                 return None, "No pude subir la imagen al box de ComfyUI."
             cmd = (
-                f"MODEL='{cm}' LORA='{cl}' INPUT_IMAGE='{name}' "
+                f"MODEL='{cm}' LORA='{cl}' INPUT_IMAGE='{name}' {refine_env}"
                 f"python3 /workspace/gen_comfy.py"
             )
             remotes = await _comfyui_run_remote(cmd, prompt)

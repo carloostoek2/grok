@@ -134,6 +134,8 @@ COMFYUI_LORA_LABELS = {
     "krea_nsfw": "Krea2 NSFW V4",
     "krea_snapshot": "Realistic Snapshot",
     "krea_both": "NSFW V4 + Realistic Snapshot",
+    "krea_snofs": "SNOFS v1.3D",
+    "qwen_snofs": "SNOFS v1.3",
     "krea_edit": "✏️ Editar (Identity Edit)",
     "krea_edit_nsfw": "✏️ Editar + NSFW V4",
     "krea_edit_snapshot": "✏️ Editar + Snapshot",
@@ -143,17 +145,17 @@ COMFYUI_LORA_LABELS = {
     "multiangle_batch": "🎲 Multi-ángulo ×5 (auto)",
 }
 COMFYUI_LORAS_BY_MODEL = {
-    "qwen": ("none", "lightning", "multiangle", "multiangle_batch"),
+    "qwen": ("none", "lightning", "qwen_snofs", "multiangle", "multiangle_batch"),
     "krea2": (
-        "none", "krea_nsfw", "krea_snapshot", "krea_both",
+        "none", "krea_nsfw", "krea_snapshot", "krea_both", "krea_snofs",
         "krea_edit", "krea_edit_nsfw", "krea_edit_snapshot", "krea_edit_both",
     ),
     "krea2_raw": (
-        "none", "krea_nsfw", "krea_snapshot", "krea_both",
+        "none", "krea_nsfw", "krea_snapshot", "krea_both", "krea_snofs",
         "krea_edit", "krea_edit_nsfw", "krea_edit_snapshot", "krea_edit_both",
     ),
     "krea2_moody": (
-        "none", "krea_nsfw", "krea_snapshot", "krea_both",
+        "none", "krea_nsfw", "krea_snapshot", "krea_both", "krea_snofs",
         "krea_edit", "krea_edit_nsfw", "krea_edit_snapshot", "krea_edit_both",
     ),
     "wan_i2v": ("none", "lightx2v"),
@@ -194,6 +196,14 @@ def config_comfyui_keyboard(deps: dict[str, Any], user_id: int) -> InlineKeyboar
                 )
             ]
         )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                text=("✨ Refinar: ON" if cfg.get("refine", "1") == "1" else "✨ Refinar: OFF"),
+                callback_data=f"cfg:comfyui:refine:{'0' if cfg.get('refine', '1') == '1' else '1'}",
+            )
+        ]
+    )
     rows.append([InlineKeyboardButton(text="← Modelo", callback_data="cfg:back:model")])
     rows.append([InlineKeyboardButton(text="Cerrar", callback_data="cfg:close")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -204,6 +214,7 @@ def _comfyui_screen_text(deps: dict[str, Any], user_id: int, *, updated: bool = 
     header = "Configuración actualizada ✅\n" if updated else "Configuración de ComfyUI (GPU propia):\n"
     model_label = COMFYUI_MODEL_LABELS.get(cfg["model"], cfg["model"])
     lora_label = _comfyui_lora_label(cfg["model"], cfg["lora"])
+    refine_label = "ON ✨" if cfg.get("refine", "1") == "1" else "OFF"
     if cfg["model"] == "wan_i2v":
         hint = "\nVideo: envía una foto + prompt (o responde a una foto) para generar el video."
     else:
@@ -211,7 +222,8 @@ def _comfyui_screen_text(deps: dict[str, Any], user_id: int, *, updated: bool = 
     return (
         f"{header}"
         f"<b>Modelo:</b> {model_label}\n"
-        f"<b>LoRA:</b> {lora_label}\n\n"
+        f"<b>LoRA:</b> {lora_label}\n"
+        f"<b>Refinar:</b> {refine_label}\n\n"
         f"Elige el modelo y el LoRA:{hint}"
     )
 
@@ -849,7 +861,7 @@ async def handle_cfg_video(callback: types.CallbackQuery, state: FSMContext):
 
 
 async def handle_cfg_comfyui(callback: types.CallbackQuery, state: FSMContext):
-    """cfg:comfyui:model:<key> | cfg:comfyui:lora:<value>"""
+    """cfg:comfyui:model:<key> | cfg:comfyui:lora:<value> | cfg:comfyui:refine:0|1"""
     if await _reject_non_private_callback(callback):
         return
     deps = _deps()
@@ -867,7 +879,7 @@ async def handle_cfg_comfyui(callback: types.CallbackQuery, state: FSMContext):
         return
 
     parts = callback.data.split(":")
-    if len(parts) != 4 or parts[2] not in ("model", "lora"):
+    if len(parts) != 4 or parts[2] not in ("model", "lora", "refine"):
         await callback.answer("Opción inválida.", show_alert=True)
         return
 
@@ -877,6 +889,9 @@ async def handle_cfg_comfyui(callback: types.CallbackQuery, state: FSMContext):
         return
     if kind == "lora" and value not in valid_loras:
         await callback.answer("LoRA no disponible.", show_alert=True)
+        return
+    if kind == "refine" and value not in ("0", "1"):
+        await callback.answer("Opción inválida.", show_alert=True)
         return
 
     uid = callback.from_user.id
@@ -899,7 +914,12 @@ async def handle_cfg_comfyui(callback: types.CallbackQuery, state: FSMContext):
         "comfyui",
         updated=True,
     )
-    label = value if kind == "lora" else cfg["model"]
+    if kind == "refine":
+        label = "ON ✨" if value == "1" else "OFF"
+    elif kind == "lora":
+        label = value
+    else:
+        label = cfg["model"]
     await callback.answer(f"ComfyUI {kind}: {label}")
 
 
