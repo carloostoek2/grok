@@ -11,9 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import bot
+import sessions
 
 
 def _status_message():
@@ -886,3 +888,221 @@ async def test_handle_cancel_job_only_cancels_matching_job_refine():
 
     assert fut_a.done() and fut_a.result() is bot._REFINE_CANCELLED
     assert not fut_b.done()
+
+
+# --- item 3: wiring meta/cancel_event across call sites + album routing -------
+
+
+def _photo_message(*, caption=None, user_id=1001, chat_id=2001, message_id=1, file_id="p1"):
+    msg = MagicMock()
+    msg.from_user.id = user_id
+    msg.chat.id = chat_id
+    msg.message_id = message_id
+    msg.caption = caption
+    msg.media_group_id = None
+    msg.reply_to_message = None
+    msg.photo = [MagicMock(file_id=file_id)]
+    msg.answer = AsyncMock()
+    msg.answer_photo = AsyncMock()
+    return msg
+
+
+def _album_message(*, user_id=1001, chat_id=2001, message_id=1, file_id="p1"):
+    msg = MagicMock()
+    msg.from_user.id = user_id
+    msg.chat.id = chat_id
+    msg.message_id = message_id
+    msg.caption = "cambia el fondo"
+    msg.media_group_id = "mg-1"
+    msg.photo = [MagicMock(file_id=file_id)]
+    msg.answer = AsyncMock()
+    msg.edit_text = AsyncMock()
+    status = MagicMock()
+    status.edit_text = AsyncMock()
+    status.delete = AsyncMock()
+    msg.reply = AsyncMock(return_value=status)
+    return msg
+
+
+_COMFYUI_REMOTES = {"comfyui_remotes": ["/workspace/ComfyUI/output/base_a.png"]}
+
+
+async def test_regen_comfyui_passes_meta_and_cancel_event(generation_refs_file):
+    uid = 9201
+    sessions.set_comfyui_config(uid, model="krea2")
+    bot.user_state[uid] = {"model": "comfyui"}
+    regen = bot._build_image_regen_context(
+        model=bot.get_model(uid),
+        user_id=uid,
+        prompt="blue moon",
+        mode="text",
+    )
+    sessions.save_generation_ref(400, 88, provider="comfyui", prompt="blue moon", regen=regen)
+
+    photo_msg = MagicMock()
+    photo_msg.photo = [MagicMock()]
+    photo_msg.chat.id = 400
+    photo_msg.message_id = 88
+    photo_msg.answer = AsyncMock(return_value=MagicMock())
+
+    callback = MagicMock()
+    callback.message = photo_msg
+    callback.answer = AsyncMock()
+
+    with patch.object(bot, "generate_image", new_callable=AsyncMock, return_value=(["/tmp/c.png"], None, dict(_COMFYUI_REMOTES))):
+        with patch.object(bot, "_send_comfyui_output", new_callable=AsyncMock) as mock_send:
+            await bot.handle_regenerate_image(callback)
+
+    mock_send.assert_awaited_once()
+    assert mock_send.await_args.kwargs["meta"] == _COMFYUI_REMOTES
+    assert mock_send.await_args.kwargs["cancel_event"] is not None
+
+
+async def test_text_gen_comfyui_passes_meta_cancel_none():
+    msg = MagicMock()
+    msg.from_user.id = 7034
+    msg.answer = AsyncMock()
+    model = _comfyui_model(key="comfyui", name="ComfyUI")
+
+    with patch.object(bot, "generate_image", new_callable=AsyncMock, return_value=(["/tmp/c.png"], None, dict(_COMFYUI_REMOTES))):
+        with patch.object(bot, "_send_comfyui_output", new_callable=AsyncMock) as mock_send:
+            await bot._do_generate_text(msg, model, "cat")
+
+    mock_send.assert_awaited_once()
+    assert mock_send.await_args.kwargs["meta"] == _COMFYUI_REMOTES
+    assert mock_send.await_args.kwargs["cancel_event"] is None
+
+
+async def test_reply_edit_comfyui_passes_meta_cancel_none(sessions_file, generation_refs_file):
+    uid = 8012
+    sessions.set_comfyui_config(uid, model="krea2")
+    bot.user_state[uid] = {"model": "comfyui"}
+
+    reply_msg = MagicMock()
+    reply_msg.photo = [MagicMock(file_id="fid")]
+    reply_msg.chat.id = 300
+    reply_msg.message_id = 50
+
+    message = MagicMock()
+    message.from_user.id = uid
+    message.text = "cambia el fondo"
+    message.reply_to_message = reply_msg
+    message.answer = AsyncMock()
+
+    with patch.object(bot, "_download_telegram_photo", new_callable=AsyncMock) as mock_dl:
+        with patch.object(bot, "generate_image", new_callable=AsyncMock, return_value=(["/tmp/c.png"], None, dict(_COMFYUI_REMOTES))):
+            with patch.object(bot, "_send_comfyui_output", new_callable=AsyncMock) as mock_send:
+                await bot.handle_reply_edit(message)
+
+    mock_dl.assert_awaited_once()
+    mock_send.assert_awaited_once()
+    assert mock_send.await_args.kwargs["meta"] == _COMFYUI_REMOTES
+    assert mock_send.await_args.kwargs["cancel_event"] is None
+
+
+async def test_variables_batch_comfyui_passes_meta_and_cancel_event(sessions_file, variables_file, monkeypatch):
+    monkeypatch.setattr(bot, "COMFYUI_HOST", "1.2.3.4")
+    bot.user_state[1001] = {"model": "comfyui"}
+    msg = _photo_message(caption="/variables 2")
+    msg.answer.return_value = _status_message()
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        return (["/tmp/v.png"], None, dict(_COMFYUI_REMOTES))
+
+    with patch.object(bot, "generate_image", side_effect=_fake_gen):
+        with patch.object(bot, "_send_comfyui_output", new_callable=AsyncMock, side_effect=[True, True]) as mock_send:
+            with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_proc:
+                with patch(
+                    "variables_store.random_combination",
+                    return_value=("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
+                ):
+                    await bot._run_variables_batch(msg, 2, BytesIO(b"img"), None, source_file_id="p1")
+
+    assert mock_send.await_count == 2
+    for call in mock_send.await_args_list:
+        assert call.kwargs["meta"] == _COMFYUI_REMOTES
+        assert call.kwargs["cancel_event"] is not None
+        assert call.kwargs["delete_status"] is False
+    last_text = msg.answer.return_value.edit_text.call_args.args[0]
+    assert "Listo: 2/2" in last_text
+
+
+async def test_album_batch_comfyui_routes_to_send_comfyui_output(sessions_file, generation_refs_file, monkeypatch):
+    monkeypatch.setattr(bot, "COMFYUI_HOST", "1.2.3.4")
+    uid = 1101
+    sessions.set_comfyui_config(uid, model="krea2")
+    bot.user_state[uid] = {"model": "comfyui"}
+    anchor_msg = _album_message(user_id=uid, message_id=7, file_id="p1")
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        return (["/tmp/a.png"], None, dict(_COMFYUI_REMOTES))
+
+    with patch.object(bot, "_download_telegram_file_id", new_callable=AsyncMock):
+        with patch.object(bot, "generate_image", side_effect=_fake_gen):
+            with patch.object(bot, "_send_comfyui_output", new_callable=AsyncMock, side_effect=[True, True]) as mock_send:
+                with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_proc:
+                    await bot._process_album_edit_from_file_ids(anchor_msg, "cambia el fondo", ["p1", "p2"])
+
+    assert mock_send.await_count == 2
+    for call in mock_send.await_args_list:
+        assert call.kwargs["meta"] == _COMFYUI_REMOTES
+        assert call.kwargs["cancel_event"] is not None
+        assert call.kwargs["delete_status"] is False
+    mock_proc.assert_not_awaited()
+    last_text = anchor_msg.reply.return_value.edit_text.call_args.args[0]
+    assert "Completadas 2/2" in last_text
+
+
+async def test_variables_batch_comfyui_chain_continues_after_decision(sessions_file, variables_file, monkeypatch):
+    monkeypatch.setattr(bot, "COMFYUI_HOST", "1.2.3.4")
+    bot.user_state[1001] = {"model": "comfyui"}
+    msg = _photo_message(caption="/variables 2")
+    msg.answer.return_value = _status_message()
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        return (["/tmp/v.png"], None, dict(_COMFYUI_REMOTES))
+
+    base_msg = MagicMock()
+    base_msg.delete = AsyncMock()
+    base_msg.edit_reply_markup = AsyncMock()
+    refined_msg = MagicMock()
+    refined_msg.delete = AsyncMock()
+    refined_msg.edit_reply_markup = AsyncMock()
+
+    refine_mock = AsyncMock(return_value=(["/tmp/refined.png"], None))
+
+    with patch.object(bot, "generate_image", side_effect=_fake_gen):
+        with patch.object(
+            bot, "_send_comfyui_image", new_callable=AsyncMock,
+            side_effect=[base_msg, refined_msg, base_msg],
+        ) as send_img:
+            with patch.object(bot, "_generate_comfyui_refine", new=refine_mock):
+                with patch.object(bot, "_send_comfyui_album", new_callable=AsyncMock):
+                    with patch(
+                        "variables_store.random_combination",
+                        return_value=("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
+                    ):
+                        task = asyncio.create_task(
+                            bot._run_variables_batch(msg, 2, BytesIO(b"img"), None, source_file_id="p1")
+                        )
+                        # item 1: confirm refine (yes)
+                        for _ in range(200):
+                            if bot._pending_refine:
+                                break
+                            await asyncio.sleep(0)
+                        assert bot._pending_refine, "pending refine (item 1) never registered"
+                        token1 = next(iter(bot._pending_refine))
+                        await bot.handle_refine_decision(_refine_callback(1001, f"refine:{token1}:yes"))
+                        # item 2: keep the base (no)
+                        for _ in range(200):
+                            if any(t != token1 for t in bot._pending_refine):
+                                break
+                            await asyncio.sleep(0)
+                        token2 = next(t for t in bot._pending_refine if t != token1)
+                        await bot.handle_refine_decision(_refine_callback(1001, f"refine:{token2}:no"))
+                        await asyncio.wait_for(task, timeout=10)
+
+    refine_mock.assert_awaited_once()
+    assert send_img.await_count >= 3
+    last_text = msg.answer.return_value.edit_text.call_args.args[0]
+    assert "Listo: 2/2" in last_text

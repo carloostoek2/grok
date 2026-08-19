@@ -1380,6 +1380,8 @@ async def handle_regenerate_image(callback: types.CallbackQuery):
                 callback.message,
                 "Edit" if mode == "edit" else "Prompt",
                 regen,
+                meta=kie_meta,
+                cancel_event=cancel_event,
             )
             return
 
@@ -1590,6 +1592,8 @@ async def _do_generate_text(
                     prompt=prompt,
                     mode="text",
                 ),
+                meta=kie_meta,
+                cancel_event=None,
             )
             return
         await process_image_result(
@@ -1874,25 +1878,46 @@ async def _process_album_edit_from_file_ids(
                     reply_markup=None,
                 )
                 return False
-            await process_image_result(
-                output,
-                prompt,
-                status_msg,
-                anchor_message,
-                "Edit",
-                delete_status=False,
-                download_allowlist=_download_allowlist_for_provider(model.get("provider")),
-                kie_meta=kie_meta,
-                regen_context=_build_image_regen_context(
+            if model.get("provider") == "comfyui":
+                await _send_comfyui_output(
+                    model,
+                    output,
+                    prompt,
+                    status_msg,
+                    anchor_message,
+                    "Edit",
+                    _build_image_regen_context(
+                        model=model,
+                        user_id=uid,
+                        prompt=prompt,
+                        mode="edit",
+                        source_file_id=file_id,
+                        integrate_mode=integrate_mode,
+                    ),
+                    delete_status=False,
+                    meta=kie_meta,
+                    cancel_event=cancel_event,
+                )
+            else:
+                await process_image_result(
+                    output,
+                    prompt,
+                    status_msg,
+                    anchor_message,
+                    "Edit",
+                    delete_status=False,
+                    download_allowlist=_download_allowlist_for_provider(model.get("provider")),
+                    kie_meta=kie_meta,
+                    regen_context=_build_image_regen_context(
+                        model=model,
+                        user_id=uid,
+                        prompt=prompt,
+                        mode="edit",
+                        source_file_id=file_id,
+                        integrate_mode=integrate_mode,
+                    ),
                     model=model,
-                    user_id=uid,
-                    prompt=prompt,
-                    mode="edit",
-                    source_file_id=file_id,
-                    integrate_mode=integrate_mode,
-                ),
-                model=model,
-            )
+                )
             completed += 1
         else:
             await status_msg.edit_text(
@@ -2197,6 +2222,8 @@ async def _run_variables_batch(
                         f"Variables {i}/{count}",
                         regen_context,
                         delete_status=False,
+                        meta=meta,
+                        cancel_event=cancel_event,
                     )
                 else:
                     await process_image_result(
@@ -2462,6 +2489,8 @@ async def handle_reply_edit(message: types.Message):
                     mode="edit",
                     source_file_id=src,
                 ),
+                meta=kie_meta,
+                cancel_event=None,
             )
             return
         source_file_id = None
