@@ -1550,3 +1550,47 @@ async def test_variables_batch_comfyui_cancel_mid_chain_stops_clean(sessions_fil
     assert "Listo:" not in last_text
     assert 1001 not in bot._active_jobs
     assert not bot._pending_refine
+
+
+async def test_send_comfyui_image_caption_includes_prompt_when_flag_set(
+    tmp_path, generation_refs_file
+):
+    image_path = tmp_path / "base.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    uid = 7001
+    message = _message(uid, 91)
+    message.chat.id = 9001
+    message.answer_photo = AsyncMock(return_value=MagicMock(message_id=100))
+    status_msg = _status_message()
+    model = _comfyui_model()
+
+    sent = await bot._send_comfyui_image(
+        str(image_path), "de pie de frente", status_msg, message, "Variables 1/1",
+        _regen_ctx(uid), model=model, delete_status=False,
+        caption_prompt=True,
+    )
+
+    assert sent is not None
+    caption = message.answer_photo.await_args.kwargs["caption"]
+    assert "<b>Prompt:</b> de pie de frente" in caption
+
+
+async def test_send_comfyui_image_caption_omits_prompt_by_default(
+    tmp_path, generation_refs_file
+):
+    image_path = tmp_path / "base2.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    uid = 7002
+    message = _message(uid, 92)
+    message.chat.id = 9002
+    message.answer_photo = AsyncMock(return_value=MagicMock(message_id=101))
+    status_msg = _status_message()
+    model = _comfyui_model()
+
+    await bot._send_comfyui_image(
+        str(image_path), "no debe salir", status_msg, message, "Edit",
+        _regen_ctx(uid), model=model, delete_status=False,
+    )
+
+    caption = message.answer_photo.await_args.kwargs["caption"]
+    assert "no debe salir" not in caption

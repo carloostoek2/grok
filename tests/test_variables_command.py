@@ -993,3 +993,206 @@ async def test_batch_rejects_comfyui_wan_i2v_via_real_detector(
     assert "video" in text
     assert "/config" in text
     mock_gen.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Caption with full prompt (only for /variables) + failure notification
+# ---------------------------------------------------------------------------
+
+def test_format_model_caption_includes_full_prompt():
+    caption = bot._format_model_caption(
+        {"key": "grok", "name": "Grok Imagine", "provider": "xai"},
+        45,
+        "de pie, retrato, luz dorada",
+    )
+    assert "<b>Prompt:</b> de pie, retrato, luz dorada" in caption
+
+
+def test_format_result_caption_includes_full_prompt():
+    caption = bot._format_result_caption(
+        "Variables 1/3",
+        45,
+        model={"key": "grok", "name": "Grok Imagine", "provider": "xai"},
+        prompt="de pie, retrato, luz dorada",
+    )
+    assert "<b>Prompt:</b> de pie, retrato, luz dorada" in caption
+
+
+def test_format_model_caption_without_prompt_unchanged():
+    caption = bot._format_model_caption(
+        {"key": "grok", "name": "Grok Imagine", "provider": "xai"}, 45
+    )
+    assert "<b>Prompt:</b>" not in caption
+
+
+def test_caption_prompt_truncated_to_fit_telegram_limit():
+    prompt = "x" * 5000
+    caption = bot._format_result_caption(
+        "Variables 1/1",
+        None,
+        model={"key": "grok", "name": "Grok Imagine", "provider": "xai"},
+        prompt=prompt,
+    )
+    assert len(caption) <= bot.TELEGRAM_MAX_CAPTION_LEN
+    assert caption.endswith("…")
+
+
+async def test_batch_passes_caption_prompt_to_result_senders(sessions_file, variables_file):
+    msg = _make_photo_message(caption="/variables 2")
+    status = _make_status()
+    msg.answer.return_value = status
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        return ([RESULT_URL], None, {"task_id": "t", "index": 0, "provider": "kie"})
+
+    combos = [
+        ("a1, b, c", ("a1", "b", "c")),
+        ("a2, e, f", ("a2", "e", "f")),
+    ]
+    with patch.object(bot, "generate_image", side_effect=_fake_gen):
+        with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
+            with patch("variables_store.random_combination", side_effect=combos):
+                await bot._run_variables_batch(msg, 2, BytesIO(b"img"), None)
+
+    assert mock_res.await_count == 2
+    for call in mock_res.await_args_list:
+        assert call.kwargs.get("caption_prompt") is True
+
+
+async def test_process_image_result_variables_caption_has_full_prompt(generation_refs_file):
+    status_msg = MagicMock()
+    status_msg.delete = AsyncMock()
+    message = MagicMock()
+    message.chat.id = 201
+    message.message_id = 5
+    sent = MagicMock()
+    sent.message_id = 100
+    message.answer_photo = AsyncMock(return_value=sent)
+    prompt = "de pie, retrato, luz dorada"
+
+    with patch.object(bot, "download_url", new_callable=AsyncMock, return_value=(b"png", None)):
+        await bot.process_image_result(
+            [RESULT_URL],
+            prompt,
+            status_msg,
+            message,
+            "Variables 1/1",
+            download_allowlist="xai",
+            regen_context={"provider": "xai"},
+            model={"key": "grok", "name": "Grok Imagine", "provider": "xai"},
+            caption_prompt=True,
+        )
+
+    caption = message.answer_photo.await_args.kwargs["caption"]
+    assert "<b>Prompt:</b> de pie, retrato, luz dorada" in caption
+
+
+async def test_process_image_result_without_caption_prompt_keeps_old_caption(generation_refs_file):
+    status_msg = MagicMock()
+    status_msg.delete = AsyncMock()
+    message = MagicMock()
+    message.chat.id = 202
+    message.message_id = 6
+    sent = MagicMock()
+    sent.message_id = 101
+    message.answer_photo = AsyncMock(return_value=sent)
+
+    with patch.object(bot, "download_url", new_callable=AsyncMock, return_value=(b"png", None)):
+        await bot.process_image_result(
+            [RESULT_URL],
+            "no debe salir",
+            status_msg,
+            message,
+            "Prompt",
+            download_allowlist="xai",
+            regen_context={"provider": "xai"},
+        )
+
+    caption = message.answer_photo.await_args.kwargs["caption"]
+    assert "no debe salir" not in caption
+
+
+async def test_batch_failure_notifies_with_prompt(sessions_file, variables_file):
+    msg = _make_photo_message(caption="/variables 3")
+    status = _make_status()
+    msg.answer.return_value = status
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        if prompt.startswith("fail"):
+            return None, "Error del proveedor", None
+        return ([RESULT_URL], None, {"task_id": "t", "index": 0, "provider": "kie"})
+
+    combos = [
+        ("ok1, b, c", ("ok1", "b", "c")),
+        ("fail, e, f", ("fail", "e", "f")),
+        ("ok3, h, i", ("ok3", "h", "i")),
+    ]
+    with patch.object(bot, "generate_image", side_effect=_fake_gen) as mock_gen:
+        with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
+            with patch("variables_store.random_combination", side_effect=combos):
+                await bot._run_variables_batch(msg, 3, BytesIO(b"img"), None)
+
+    assert mock_gen.await_count == 3
+    assert mock_res.await_count == 2
+    fail_calls = [
+        c.args[0] for c in msg.answer.await_args_list
+        if c.args and c.args[0].startswith("Edición")
+    ]
+    assert len(fail_calls) == 1
+    assert "Edición 2/3 falló con el siguiente prompt:" in fail_calls[0]
+    assert "fail, e, f" in fail_calls[0]
+
+
+async def test_batch_failure_notifies_shuffled_prompt_on_double_exhaustion(sessions_file, variables_file):
+    variables_store.set_template("{pose} {angle}")
+    msg = _make_photo_message(caption="/variables 1")
+    status = _make_status()
+    msg.answer.return_value = status
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        return (None, "negado", {"exhausted": True, "provider": "kie"})
+
+    with patch.object(bot, "generate_image", side_effect=_fake_gen):
+        with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
+            with patch(
+                "variables_store.random_combination",
+                return_value=("de pie de frente", ("de pie", "de frente", "mirando")),
+            ):
+                await bot._run_variables_batch(msg, 1, BytesIO(b"img"), None)
+
+    fail_calls = [
+        c.args[0] for c in msg.answer.await_args_list
+        if c.args and c.args[0].startswith("Edición")
+    ]
+    assert len(fail_calls) == 1
+    assert "Edición 1/1 falló con el siguiente prompt:" in fail_calls[0]
+    # la notificación usa el prompt barajado del último intento, no el original
+    assert "de frente de pie" in fail_calls[0]
+
+
+async def test_batch_failure_notifies_on_generate_exception(sessions_file, variables_file):
+    msg = _make_photo_message(caption="/variables 2")
+    status = _make_status()
+    msg.answer.return_value = status
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        if prompt.startswith("boom"):
+            raise RuntimeError("timeout del backend")
+        return ([RESULT_URL], None, {"task_id": "t", "index": 0, "provider": "kie"})
+
+    combos = [
+        ("boom, b, c", ("boom", "b", "c")),
+        ("ok2, e, f", ("ok2", "e", "f")),
+    ]
+    with patch.object(bot, "generate_image", side_effect=_fake_gen):
+        with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
+            with patch("variables_store.random_combination", side_effect=combos):
+                await bot._run_variables_batch(msg, 2, BytesIO(b"img"), None)
+
+    fail_calls = [
+        c.args[0] for c in msg.answer.await_args_list
+        if c.args and c.args[0].startswith("Edición")
+    ]
+    assert len(fail_calls) == 1
+    assert "Edición 1/2 falló" in fail_calls[0]
+    assert "boom, b, c" in fail_calls[0]

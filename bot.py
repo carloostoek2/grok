@@ -348,23 +348,51 @@ def _format_elapsed(sec: int | float | None) -> str:
     return f"{m}m {s:02d}s"
 
 
-def _format_model_caption(model: dict, elapsed_sec: int | None) -> str:
-    """Caption con Modelo / LoRA (ComfyUI) / tiempo de ejecución."""
+def _append_prompt_to_caption(caption: str, prompt: str) -> str:
+    """Append the prompt to a caption. Truncates only when the combined caption
+    would exceed Telegram's limit, so the photo send never fails."""
+    if not prompt:
+        return caption
+    label = "\n<b>Prompt:</b> "
+    escaped = _escape_prompt(prompt)
+    if len(caption) + len(label) + len(escaped) <= TELEGRAM_MAX_CAPTION_LEN:
+        return f"{caption}{label}{escaped}"
+    budget = TELEGRAM_MAX_CAPTION_LEN - len(caption) - len(label) - 1
+    if budget <= 0:
+        return caption
+    lo, hi = 0, len(prompt)
+    best = 0
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        if len(_escape_prompt(prompt[:mid])) <= budget:
+            best = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    return f"{caption}{label}{_escape_prompt(prompt[:best])}…"
+
+
+def _format_model_caption(
+    model: dict, elapsed_sec: int | None, prompt: str | None = None
+) -> str:
+    """Caption con Modelo / LoRA (ComfyUI) / tiempo de ejecución + prompt."""
     cm = model.get("comfyui_model")
     if cm:
         mlabel = COMFYUI_CAPTION_MODEL_LABELS.get(cm, cm) or "?"
         cl = model.get("comfyui_lora")
         llabel = COMFYUI_CAPTION_LORA_LABELS.get(cl, cl) or "Sin LoRA"
-        return (
+        body = (
             f"<b>Modelo:</b> {_escape_prompt(mlabel)}\n"
             f"<b>LoRA:</b> {_escape_prompt(llabel)}\n"
             f"<b>Tiempo:</b> {_format_elapsed(elapsed_sec)}"
         )
-    mlabel = model.get("name", "?")
-    return (
-        f"<b>Modelo:</b> {_escape_prompt(mlabel)}\n"
-        f"<b>Tiempo:</b> {_format_elapsed(elapsed_sec)}"
-    )
+    else:
+        mlabel = model.get("name", "?")
+        body = (
+            f"<b>Modelo:</b> {_escape_prompt(mlabel)}\n"
+            f"<b>Tiempo:</b> {_format_elapsed(elapsed_sec)}"
+        )
+    return _append_prompt_to_caption(body, prompt)
 
 
 def _format_result_caption(
@@ -372,11 +400,12 @@ def _format_result_caption(
     elapsed_sec: int | None,
     variant: str | None = None,
     model: dict | None = None,
+    prompt: str | None = None,
 ) -> str:
     if model is not None:
-        return _format_model_caption(model, elapsed_sec)
+        return _format_model_caption(model, elapsed_sec, prompt)
     header = f"<b>{prefix} ({variant}):</b> " if variant else f"<b>{prefix}:</b> "
-    return f"{header}{_format_elapsed(elapsed_sec)}"
+    return _append_prompt_to_caption(f"{header}{_format_elapsed(elapsed_sec)}", prompt)
 
 
 def _parse_integrate_caption(caption: str) -> tuple[bool, str]:
@@ -2065,6 +2094,20 @@ def _variables_batch_summary(completed: int, failed: int, count: int) -> str:
     return f"{icon} Listo: {completed}/{count} imágenes generadas ({failed} {err_label})."
 
 
+async def _notify_variables_failure(
+    message: types.Message, index: int, count: int, prompt: str
+) -> None:
+    """Report a failed batch item with the prompt that was attempted."""
+    try:
+        await message.answer(
+            f"Edición {index}/{count} falló con el siguiente prompt:\n\n"
+            f"{_escape_prompt(prompt)}",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+
 async def _run_variables_batch(
     message: types.Message,
     count: int,
@@ -2133,6 +2176,7 @@ async def _run_variables_batch(
                 )
                 return
             prompt, combo_tuple = combo
+            last_prompt = prompt
             used_combos.add(combo_tuple)
 
             if image_data is not None:
@@ -2159,6 +2203,7 @@ async def _run_variables_batch(
                     if image_data is not None:
                         image_data.seek(0)
                     shuffled_prompt = variables_store.build_prompt_shuffled(*combo_tuple)
+                    last_prompt = shuffled_prompt
                     output, err, meta = await generate_image(
                         model,
                         shuffled_prompt,
@@ -2177,10 +2222,12 @@ async def _run_variables_batch(
                     if err and meta and meta.get("exhausted"):
                         variables_store.blacklist_add(variables_store.combo_key(*combo_tuple))
                         failed += 1
+                        await _notify_variables_failure(message, i, count, last_prompt)
                         continue
                     prompt = shuffled_prompt
                 if err:
                     failed += 1
+                    await _notify_variables_failure(message, i, count, last_prompt)
                     continue
                 regen_context = _build_image_regen_context(
                     model=model,
@@ -2202,6 +2249,7 @@ async def _run_variables_batch(
                         delete_status=False,
                         meta=meta,
                         cancel_event=cancel_event,
+                        caption_prompt=True,
                     )
                 else:
                     await process_image_result(
@@ -2215,9 +2263,11 @@ async def _run_variables_batch(
                         regen_context=regen_context,
                         delete_status=False,
                         model=model,
+                        caption_prompt=True,
                     )
             except Exception:
                 failed += 1
+                await _notify_variables_failure(message, i, count, last_prompt)
                 continue
             completed += 1
 
@@ -3514,6 +3564,7 @@ async def _send_comfyui_image(
     reply_markup: InlineKeyboardMarkup | None = None,
     save_ref: bool = True,
     elapsed_sec: int | None = None,
+    caption_prompt: bool = False,
 ) -> types.Message | None:
     """Send a ComfyUI local-file result to Telegram directly (bypasses the
     URL-download machinery in process_image_result, which chokes on local paths).
@@ -3529,7 +3580,10 @@ async def _send_comfyui_image(
     kb = _image_regenerate_keyboard() if reply_markup is None else reply_markup
     sent_msg = await message.answer_photo(
         photo,
-        caption=_format_result_caption(prefix, elapsed_sec, model=model),
+        caption=_format_result_caption(
+            prefix, elapsed_sec, model=model,
+            prompt=prompt if caption_prompt else None,
+        ),
         parse_mode="HTML",
         reply_markup=kb,
         reply_to_message_id=message.message_id,
@@ -3565,6 +3619,7 @@ async def _send_comfyui_video(
     delete_status: bool = True,
     *,
     elapsed_sec: int | None = None,
+    caption_prompt: bool = False,
 ) -> bool:
     """Send a ComfyUI Wan/MiniMax MP4 result to Telegram as a video."""
     try:
@@ -3575,7 +3630,10 @@ async def _send_comfyui_video(
         return False
     sent_msg = await message.answer_video(
         video,
-        caption=_format_result_caption(prefix, elapsed_sec, model=model),
+        caption=_format_result_caption(
+            prefix, elapsed_sec, model=model,
+            prompt=prompt if caption_prompt else None,
+        ),
         parse_mode="HTML",
         reply_markup=_image_regenerate_keyboard(),
     )
@@ -3604,6 +3662,7 @@ async def _send_comfyui_output(
     delete_status: bool = True,
     meta: dict | None = None,
     cancel_event: asyncio.Event | None = None,
+    caption_prompt: bool = False,
 ) -> bool:
     """Dispatch: video (MiniMax/Wan) o imagen (resto de modelos ComfyUI).
     output puede ser una LISTA (batch multi-ángulo = 5 imágenes → álbum).
@@ -3614,6 +3673,7 @@ async def _send_comfyui_output(
         return await _send_comfyui_video(
             output, prompt, status_msg, message, prefix, regen_context, model=model,
             delete_status=delete_status, elapsed_sec=elapsed_sec,
+            caption_prompt=caption_prompt,
         )
     if (
         model.get("comfyui_refine") == "1"
@@ -3623,6 +3683,7 @@ async def _send_comfyui_output(
         return await _send_comfyui_confirm_refine(
             model, output, prompt, status_msg, message, prefix, regen_context, meta,
             delete_status=delete_status, cancel_event=cancel_event,
+            caption_prompt=caption_prompt,
         )
     if isinstance(output, list):
         if len(output) == 1:
@@ -3632,16 +3693,20 @@ async def _send_comfyui_output(
                 await _send_comfyui_album(
                     output, prompt, status_msg, message, prefix, regen_context, model=model,
                     delete_status=delete_status, elapsed_sec=elapsed_sec,
+                    caption_prompt=caption_prompt,
                 )
             )
     return (await _send_comfyui_image(
         output, prompt, status_msg, message, prefix, regen_context, model=model,
         delete_status=delete_status, elapsed_sec=elapsed_sec,
+        caption_prompt=caption_prompt,
     )) is not None
 
 
 def _build_comfyui_album_media(
     outputs: list, prefix: str, elapsed_sec: int | None, model: dict | None,
+    *,
+    prompt: str | None = None,
 ) -> list[types.InputMediaPhoto]:
     media: list = []
     for i, p in enumerate(outputs[:10]):
@@ -3650,7 +3715,10 @@ def _build_comfyui_album_media(
                 data = f.read()
         except (OSError, TypeError):
             continue
-        cap = _format_result_caption(prefix, elapsed_sec, model=model) if i == 0 else None
+        cap = (
+            _format_result_caption(prefix, elapsed_sec, model=model, prompt=prompt)
+            if i == 0 else None
+        )
         media.append(
             types.InputMediaPhoto(
                 media=BufferedInputFile(data, filename=f"comfyui_{i}.png"),
@@ -3673,10 +3741,14 @@ async def _send_comfyui_album(
     delete_status: bool = True,
     save_ref: bool = True,
     elapsed_sec: int | None = None,
+    caption_prompt: bool = False,
 ) -> list[types.Message] | None:
     """Envía varias imágenes como álbum de Telegram (máx 10). Devuelve los mensajes
     (None si no se pudo leer ninguna)."""
-    media = _build_comfyui_album_media(outputs, prefix, elapsed_sec, model)
+    media = _build_comfyui_album_media(
+        outputs, prefix, elapsed_sec, model,
+        prompt=prompt if caption_prompt else None,
+    )
     if not media:
         await status_msg.edit_text("No se pudieron leer las imágenes generadas.")
         return None
@@ -3711,6 +3783,7 @@ async def _send_comfyui_confirm_refine(
     *,
     delete_status: bool = True,
     cancel_event: asyncio.Event | None = None,
+    caption_prompt: bool = False,
 ) -> bool:
     """Two-stage flow: send the base + confirm keyboard, wait for the decision
     (TTL = REFINE_CONFIRM_TIMEOUT), then refine or finalize the base.
@@ -3732,7 +3805,7 @@ async def _send_comfyui_confirm_refine(
         base_album = await _send_comfyui_album(
             output, prompt, status_msg, message, prefix, regen_context,
             model=model, delete_status=False, save_ref=True,
-            elapsed_sec=base_elapsed,
+            elapsed_sec=base_elapsed, caption_prompt=caption_prompt,
         )
         if base_album is None:
             # No base to confirm on — don't post a confirm prompt for images the
@@ -3748,7 +3821,7 @@ async def _send_comfyui_confirm_refine(
         base_msg = await _send_comfyui_image(
             single, prompt, status_msg, message, prefix, regen_context,
             model=model, delete_status=False, save_ref=True, reply_markup=kb,
-            elapsed_sec=base_elapsed,
+            elapsed_sec=base_elapsed, caption_prompt=caption_prompt,
         )
         if base_msg is None:
             _drop_pending_refine(token)
@@ -3832,7 +3905,7 @@ async def _send_comfyui_confirm_refine(
             refined_album = await _send_comfyui_album(
                 refined, prompt, status_msg, message, prefix, regen_context,
                 model=model, delete_status=delete_status,
-                elapsed_sec=refine_elapsed,
+                elapsed_sec=refine_elapsed, caption_prompt=caption_prompt,
             )
             if refined_album is None:
                 # Refined send failed: clean up the dangling confirm message,
@@ -3856,7 +3929,7 @@ async def _send_comfyui_confirm_refine(
             ok = await _send_comfyui_image(
                 single_refined, prompt, status_msg, message, prefix, regen_context,
                 model=model, delete_status=delete_status,
-                elapsed_sec=refine_elapsed,
+                elapsed_sec=refine_elapsed, caption_prompt=caption_prompt,
             )
             if ok is None:
                 # Refined send failed: surface the error, restore the base to
@@ -4370,6 +4443,7 @@ async def process_image_result(
     regen_context: dict | None = None,
     delete_status: bool = True,
     model: dict | None = None,
+    caption_prompt: bool = False,
 ):
     if output is None:
         await status_msg.edit_text("Error: el modelo no devolvio nada. Intenta con otro prompt.")
@@ -4395,7 +4469,10 @@ async def process_image_result(
         photo = BufferedInputFile(image_bytes, filename="generated.png")
         sent_msg = await message.answer_photo(
             photo,
-            caption=_format_result_caption(prefix, elapsed_sec, model=model),
+            caption=_format_result_caption(
+                prefix, elapsed_sec, model=model,
+                prompt=prompt if caption_prompt else None,
+            ),
             parse_mode="HTML",
             reply_markup=_image_regenerate_keyboard(),
             reply_to_message_id=message.message_id,
@@ -4424,7 +4501,10 @@ async def process_image_result(
         photo = BufferedInputFile(image_bytes, filename="generated.png")
         sent_msg = await message.answer_photo(
             photo,
-            caption=_format_result_caption(prefix, elapsed_sec, variant=f"{i + 1}/{total}", model=model),
+            caption=_format_result_caption(
+                prefix, elapsed_sec, variant=f"{i + 1}/{total}", model=model,
+                prompt=prompt if caption_prompt else None,
+            ),
             parse_mode="HTML",
             reply_markup=_image_regenerate_keyboard(),
             reply_to_message_id=message.message_id,
