@@ -13,6 +13,8 @@ Telegram bot for image and video generation via xAI Grok Imagine and Replicate.
 
 Use `/config` to select models and adjust settings. Legacy aliases: `/model`, `/imagine`, `/imaginess`, `/video`.
 
+CRÍTICO: No leer logs de prompts/registros de generación
+
 Select **Grok Imagine Video** via `/config` (or `/model`), then:
 
 - Send a text prompt to generate a video (with confirmation)
