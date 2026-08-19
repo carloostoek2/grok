@@ -1878,6 +1878,11 @@ async def _process_album_edit_from_file_ids(
                     reply_markup=None,
                 )
                 return False
+            # Defensive/dead branch today: handle_album (line ~2559) drops comfyui
+            # media groups and the long-prompt path always collects a single photo,
+            # so _process_album_edit_from_file_ids never routes comfyui albums in
+            # production. Kept because it IS the correct routing if handle_album is
+            # ever extended to route comfyui albums (then it's exercised end-to-end).
             if model.get("provider") == "comfyui":
                 await _send_comfyui_output(
                     model,
@@ -3789,8 +3794,14 @@ async def _send_comfyui_confirm_refine(
                 pass
         if status_msg is not None:
             try:
+                # Only show a Cancelar button when a real job backs this refine.
+                # In no-job flows (reply/text-gen) cancel_event is None and a
+                # jobless "cancel_job" button would cancel an UNRELATED in-flight
+                # job (handle_cancel_job falls back to job_id=None → most recent).
                 await status_msg.edit_text(
-                    "Refinando…", reply_markup=_cancel_job_keyboard(cancel_event)
+                    "Refinando…",
+                    reply_markup=_cancel_job_keyboard(cancel_event)
+                    if cancel_event is not None else None,
                 )
             except Exception:
                 pass

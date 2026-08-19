@@ -740,6 +740,65 @@ async def test_send_comfyui_output_confirm_yes_shows_refining_state_before_refin
     base_msg.delete.assert_awaited_once()
 
 
+async def test_send_comfyui_output_confirm_yes_no_job_no_jobless_cancel_button():
+    # No-job flows (reply/text-gen, cancel_event=None) must NOT render a jobless
+    # "Cancelar" button on the "Refinando…" status: tapping it would cancel an
+    # unrelated in-flight job (handle_cancel_job falls back to job_id=None → the
+    # user's most recent job) and resolve every pending refine.
+    bot._pending_refine.clear()
+    uid = 6015
+    message = _message(uid, 87)
+    status_msg = _status_message()
+
+    base_msg = MagicMock()
+    base_msg.delete = AsyncMock()
+    base_msg.edit_reply_markup = AsyncMock()
+    refined_msg = MagicMock()
+    refined_msg.delete = AsyncMock()
+
+    async def _refine_after_state(*_args):
+        # The "Refinando…" status edit must carry NO cancel keyboard when there
+        # is no job backing the refine (assertions inside the mock pin ordering).
+        status_msg.edit_text.assert_awaited_with(
+            "Refinando…", reply_markup=None
+        )
+        return (["/tmp/refined.png"], None)
+
+    with patch.object(
+        bot, "_send_comfyui_image", new_callable=AsyncMock,
+        side_effect=[base_msg, refined_msg],
+    ) as send_img:
+        with patch.object(bot, "_generate_comfyui_refine", new=_refine_after_state):
+            task = asyncio.create_task(
+                bot._send_comfyui_output(
+                    _comfyui_model(),
+                    "/tmp/base.png",
+                    "prompt",
+                    status_msg,
+                    message,
+                    "Edit",
+                    _regen_ctx(uid),
+                    meta={"comfyui_remotes": ["/workspace/ComfyUI/output/base_a.png"]},
+                    cancel_event=None,
+                )
+            )
+            for _ in range(100):
+                if bot._pending_refine:
+                    break
+                await asyncio.sleep(0)
+            assert bot._pending_refine, "pending refine never registered"
+            token = next(iter(bot._pending_refine))
+            cb = _refine_callback(uid, f"refine:{token}:yes")
+            await bot.handle_refine_decision(cb)
+            result = await asyncio.wait_for(task, timeout=5)
+
+    assert result is True
+    assert send_img.await_count == 2
+    status_msg.edit_text.assert_awaited_with(
+        "Refinando…", reply_markup=None
+    )
+
+
 # --- handle_refine_decision idempotency / ownership -------------------------
 
 
@@ -1023,6 +1082,7 @@ async def test_variables_batch_comfyui_passes_meta_and_cancel_event(sessions_fil
         assert call.kwargs["meta"] == _COMFYUI_REMOTES
         assert call.kwargs["cancel_event"] is not None
         assert call.kwargs["delete_status"] is False
+    mock_proc.assert_not_awaited()
     last_text = msg.answer.return_value.edit_text.call_args.args[0]
     assert "Listo: 2/2" in last_text
 
@@ -1077,30 +1137,29 @@ async def test_variables_batch_comfyui_chain_continues_after_decision(sessions_f
             side_effect=[base_msg, refined_msg, base_msg],
         ) as send_img:
             with patch.object(bot, "_generate_comfyui_refine", new=refine_mock):
-                with patch.object(bot, "_send_comfyui_album", new_callable=AsyncMock):
-                    with patch(
-                        "variables_store.random_combination",
-                        return_value=("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
-                    ):
-                        task = asyncio.create_task(
-                            bot._run_variables_batch(msg, 2, BytesIO(b"img"), None, source_file_id="p1")
-                        )
-                        # item 1: confirm refine (yes)
-                        for _ in range(200):
-                            if bot._pending_refine:
-                                break
-                            await asyncio.sleep(0)
-                        assert bot._pending_refine, "pending refine (item 1) never registered"
-                        token1 = next(iter(bot._pending_refine))
-                        await bot.handle_refine_decision(_refine_callback(1001, f"refine:{token1}:yes"))
-                        # item 2: keep the base (no)
-                        for _ in range(200):
-                            if any(t != token1 for t in bot._pending_refine):
-                                break
-                            await asyncio.sleep(0)
-                        token2 = next(t for t in bot._pending_refine if t != token1)
-                        await bot.handle_refine_decision(_refine_callback(1001, f"refine:{token2}:no"))
-                        await asyncio.wait_for(task, timeout=10)
+                with patch(
+                    "variables_store.random_combination",
+                    return_value=("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
+                ):
+                    task = asyncio.create_task(
+                        bot._run_variables_batch(msg, 2, BytesIO(b"img"), None, source_file_id="p1")
+                    )
+                    # item 1: confirm refine (yes)
+                    for _ in range(200):
+                        if bot._pending_refine:
+                            break
+                        await asyncio.sleep(0)
+                    assert bot._pending_refine, "pending refine (item 1) never registered"
+                    token1 = next(iter(bot._pending_refine))
+                    await bot.handle_refine_decision(_refine_callback(1001, f"refine:{token1}:yes"))
+                    # item 2: keep the base (no)
+                    for _ in range(200):
+                        if any(t != token1 for t in bot._pending_refine):
+                            break
+                        await asyncio.sleep(0)
+                    token2 = next(t for t in bot._pending_refine if t != token1)
+                    await bot.handle_refine_decision(_refine_callback(1001, f"refine:{token2}:no"))
+                    await asyncio.wait_for(task, timeout=10)
 
     refine_mock.assert_awaited_once()
     assert send_img.await_count >= 3
