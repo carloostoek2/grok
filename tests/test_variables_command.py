@@ -42,6 +42,21 @@ def _make_reply_message(*, text, photo_file_id="r1", user_id=1001, chat_id=2001,
     return msg
 
 
+def _make_text_message(*, text, user_id=1001, chat_id=2001, message_id=3):
+    msg = MagicMock()
+    msg.from_user.id = user_id
+    msg.chat.id = chat_id
+    msg.message_id = message_id
+    msg.text = text
+    msg.caption = None
+    msg.media_group_id = None
+    msg.photo = None
+    msg.reply_to_message = None
+    msg.answer = AsyncMock()
+    msg.answer_photo = AsyncMock()
+    return msg
+
+
 def _make_status():
     status = MagicMock()
     status.edit_text = AsyncMock()
@@ -141,11 +156,30 @@ async def test_variables_help_photo_in_album_shows_usage(sessions_file, variable
     assert "Gestiona las listas con" in msg.answer.call_args.args[0]
 
 
-async def test_variables_help_bare_text_shows_usage(sessions_file, variables_file):
-    msg = _make_reply_message(text="/variables")
-    msg.reply_to_message = None
-    await bot.cmd_variables_help(msg)
+async def test_variables_help_bare_text_without_count_runs_one_text_batch(sessions_file, variables_file):
+    """Bare '/variables' text means count 1, like the photo-caption path."""
+    msg = _make_text_message(text="/variables")
+    with patch.object(bot, "_run_variables_batch", new_callable=AsyncMock) as mock_batch:
+        await bot.cmd_variables_help(msg)
+    mock_batch.assert_awaited_once_with(msg, 1, None, None, mode="text")
+    msg.answer.assert_not_awaited()
+
+
+async def test_variables_help_bare_text_invalid_count_shows_usage(sessions_file, variables_file):
+    msg = _make_text_message(text="/variables abc")
+    with patch.object(bot, "_run_variables_batch", new_callable=AsyncMock) as mock_batch:
+        await bot.cmd_variables_help(msg)
     assert "Gestiona las listas con" in msg.answer.call_args.args[0]
+    assert "mensaje de texto" in msg.answer.call_args.args[0]
+    mock_batch.assert_not_awaited()
+
+
+async def test_variables_help_bare_text_with_count_runs_text_batch(sessions_file, variables_file):
+    msg = _make_text_message(text="/variables 2")
+    with patch.object(bot, "_run_variables_batch", new_callable=AsyncMock) as mock_batch:
+        await bot.cmd_variables_help(msg)
+    mock_batch.assert_awaited_once_with(msg, 2, None, None, mode="text")
+    msg.answer.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -245,17 +279,39 @@ async def test_dispatcher_reply_variables_routes_to_batch(sessions_file, variabl
     mock_reply.assert_awaited_once()
 
 
-async def test_dispatcher_bare_variables_shows_usage(sessions_file, variables_file):
-    """Real dispatcher: bare '/variables' text reaches the help handler, which
-    answers the usage text (the registered handler cannot be patched by module
-    attribute, so we intercept the underlying API session call)."""
+async def test_dispatcher_bare_variables_runs_one_text_batch(sessions_file, variables_file):
+    """Real dispatcher: bare '/variables' text reaches the batch with count 1."""
+    with patch.object(bot, "ALLOWED_TELEGRAM_IDS", None):
+        with patch.object(bot, "_run_variables_batch", new_callable=AsyncMock) as mock_batch:
+            await bot.dp.feed_update(bot.bot, _make_update(text="/variables"))
+    mock_batch.assert_awaited_once()
+    args = mock_batch.await_args.args
+    assert args[1] == 1
+    assert args[2] is None and args[3] is None
+    assert mock_batch.await_args.kwargs["mode"] == "text"
+
+
+async def test_dispatcher_bare_variables_invalid_count_shows_usage(sessions_file, variables_file):
+    """Real dispatcher: '/variables abc' text shows the usage text."""
     with patch.object(bot, "ALLOWED_TELEGRAM_IDS", None):
         with patch.object(bot.bot, "session", new_callable=AsyncMock) as mock_session:
-            await bot.dp.feed_update(bot.bot, _make_update(text="/variables"))
+            await bot.dp.feed_update(bot.bot, _make_update(text="/variables abc"))
     assert mock_session.await_count == 1
     method = mock_session.call_args.args[1]
     assert type(method).__name__ == "SendMessage"
     assert "Gestiona las listas con" in method.text
+
+
+async def test_dispatcher_bare_variables_with_count_runs_text_batch(sessions_file, variables_file):
+    """Real dispatcher: bare '/variables 2' text must reach the batch in text mode."""
+    with patch.object(bot, "ALLOWED_TELEGRAM_IDS", None):
+        with patch.object(bot, "_run_variables_batch", new_callable=AsyncMock) as mock_batch:
+            await bot.dp.feed_update(bot.bot, _make_update(text="/variables 2"))
+    mock_batch.assert_awaited_once()
+    args = mock_batch.await_args.args
+    assert args[1] == 2
+    assert args[2] is None and args[3] is None
+    assert mock_batch.await_args.kwargs["mode"] == "text"
 
 
 async def test_dispatcher_regular_caption_still_edits(sessions_file, variables_file):
@@ -580,6 +636,101 @@ async def test_batch_blacklists_combo_on_second_exhaustion(sessions_file, variab
     last_text = status.edit_text.call_args.args[0]
     assert "0/1" in last_text
     assert "1 error" in last_text
+
+
+async def test_batch_text_mode_generates_without_image(sessions_file, variables_file):
+    """mode='text' runs generations with no base image and 'text' regen context."""
+    msg = _make_text_message(text="/variables 2")
+    msg.answer.return_value = _make_status()
+    combos = [
+        ("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
+        ("sentado, lateral, saltando", ("sentado", "lateral", "saltando")),
+    ]
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        return ([RESULT_URL], None, {"task_id": f"t-{prompt}", "index": 0, "provider": "kie"})
+
+    captured = {}
+
+    async def _fake_process(output, prompt, status_msg, message, prefix, **kwargs):
+        captured.update(kwargs)
+
+    with patch.object(bot, "generate_image", side_effect=_fake_gen) as mock_gen:
+        with patch.object(bot, "process_image_result", side_effect=_fake_process) as mock_res:
+            with patch("variables_store.random_combination", side_effect=combos):
+                await bot._run_variables_batch(msg, 2, None, None, mode="text")
+
+    assert mock_gen.await_count == 2
+    for call in mock_gen.await_args_list:
+        assert call.args[2] is None
+    assert mock_res.await_count == 2
+    assert captured["regen_context"]["mode"] == "text"
+    assert "source_file_id" not in captured["regen_context"]
+    status_texts = [c.args[0] for c in msg.answer.return_value.edit_text.await_args_list]
+    assert any("generando 1/2" in t for t in status_texts)
+    assert any("Listo: 2/2" in t for t in status_texts)
+
+
+async def test_batch_text_mode_failure_notice(sessions_file, variables_file):
+    """A failed text-mode item notifies with 'Generación x/y'."""
+    msg = _make_text_message(text="/variables 2")
+    status = _make_status()
+    msg.answer.return_value = status
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        if prompt.startswith("fail"):
+            return None, "Error del proveedor", None
+        return ([RESULT_URL], None, {"task_id": "t", "index": 0, "provider": "kie"})
+
+    combos = [
+        ("fail, b, c", ("fail", "b", "c")),
+        ("ok2, e, f", ("ok2", "e", "f")),
+    ]
+    with patch.object(bot, "generate_image", side_effect=_fake_gen):
+        with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
+            with patch("variables_store.random_combination", side_effect=combos):
+                await bot._run_variables_batch(msg, 2, None, None, mode="text")
+
+    assert mock_res.await_count == 1
+    fail_calls = [
+        c.args[0] for c in msg.answer.await_args_list
+        if c.args and c.args[0].startswith("Generación")
+    ]
+    assert len(fail_calls) == 1
+    assert "Generación 1/2 falló con el siguiente prompt:" in fail_calls[0]
+    assert "fail, b, c" in fail_calls[0]
+
+
+async def test_batch_text_mode_double_exhaustion_blacklists(sessions_file, variables_file):
+    """Two consecutive exhaustions in text mode mark the combo and report Generación."""
+    variables_store.set_template("{pose} {angle}")
+    msg = _make_text_message(text="/variables 1")
+    status = _make_status()
+    msg.answer.return_value = status
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        return (None, "negado", {"exhausted": True, "provider": "kie"})
+
+    with patch.object(bot, "generate_image", side_effect=_fake_gen) as mock_gen:
+        with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
+            with patch(
+                "variables_store.random_combination",
+                return_value=("de pie de frente", ("de pie", "de frente", "mirando")),
+            ):
+                await bot._run_variables_batch(msg, 1, None, None, mode="text")
+
+    assert mock_gen.await_count == 2
+    assert mock_res.await_count == 0
+    assert ("de pie", "de frente") in variables_store.get_blacklist()
+    last_text = status.edit_text.call_args.args[0]
+    assert "0/1" in last_text
+    assert "1 error" in last_text
+    fail_calls = [
+        c.args[0] for c in msg.answer.await_args_list
+        if c.args and c.args[0].startswith("Generación")
+    ]
+    assert len(fail_calls) == 1
+    assert "Generación 1/1 falló" in fail_calls[0]
 
 
 async def test_batch_empty_list_guard(sessions_file, variables_file):

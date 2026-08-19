@@ -2037,8 +2037,8 @@ async def cmd_variables_help(message: types.Message):
 
     aiogram's Command filter matches `text or caption`, and this handler is
     registered before handle_photo_caption/handle_reply_edit, so it must
-    delegate photo captions and replies to the batch entry points; only bare
-    text (no photo/reply) shows usage.
+    delegate photo captions and replies to the batch entry points; bare text
+    with a valid count runs a text-to-image batch, otherwise it shows usage.
     """
     if message.reply_to_message:
         await cmd_variables_reply(message)
@@ -2048,11 +2048,17 @@ async def cmd_variables_help(message: types.Message):
     ):
         await cmd_variables_photo(message)
         return
+    count = _parse_variables_count(message.text) if isinstance(message.text, str) else None
+    if count is not None:
+        await _run_variables_batch(message, count, None, None, mode="text")
+        return
     await message.answer(
-        "Para usar <b>/variables</b>, envía una foto con el caption "
-        "<b>/variables N</b>, o responde a una foto con <b>/variables N</b>, "
+        "Para usar <b>/variables</b>:\n"
+        "• Envía una foto con el caption <b>/variables N</b>, o responde a una foto, "
         f"para generar N ediciones (N = 1-{VARIABLES_MAX}) combinando "
-        "aleatoriamente poses, ángulos y acciones.\n\n"
+        "aleatoriamente poses, ángulos y acciones.\n"
+        "• Envía <b>/variables N</b> como mensaje de texto para generar N imágenes "
+        "directamente desde la combinación de listas.\n\n"
         "Gestiona las listas con <b>/listas</b>.",
         parse_mode="HTML",
     )
@@ -2095,12 +2101,17 @@ def _variables_batch_summary(completed: int, failed: int, count: int) -> str:
 
 
 async def _notify_variables_failure(
-    message: types.Message, index: int, count: int, prompt: str
+    message: types.Message,
+    index: int,
+    count: int,
+    prompt: str,
+    *,
+    label: str = "Edición",
 ) -> None:
     """Report a failed batch item with the prompt that was attempted."""
     try:
         await message.answer(
-            f"Edición {index}/{count} falló con el siguiente prompt:\n\n"
+            f"{label} {index}/{count} falló con el siguiente prompt:\n\n"
             f"{_escape_prompt(prompt)}",
             parse_mode="HTML",
         )
@@ -2115,12 +2126,14 @@ async def _run_variables_batch(
     kie_source_ref: dict | None,
     *,
     source_file_id: str | None = None,
+    mode: str = "edit",
 ) -> None:
-    """Run `count` image edits on the user's configured image model.
+    """Run `count` variables images on the user's configured image model.
 
-    Always uses the original source image (never chains results), relaunching
-    automatically after each result arrives. The batch is cancellable. A
-    failed item is skipped and the remaining generations still run.
+    mode="edit" edits the same source image (never chaining results);
+    mode="text" generates images from the combo prompt with no base image.
+    Either way each result relaunches the next generation automatically, the
+    batch is cancellable, and a failed item is skipped while the rest still run.
     """
     uid = message.from_user.id
     model, reject_msg = _variables_model_or_reject(uid)
@@ -2128,6 +2141,9 @@ async def _run_variables_batch(
         await message.answer(reject_msg)
         return
     use_comfyui = model.get("provider") == "comfyui"
+    is_text = mode == "text"
+    verb = "generando" if is_text else "editando"
+    fail_label = "Generación" if is_text else "Edición"
 
     lists = variables_store.get_lists()
     for name in variables_store.LIST_NAMES:
@@ -2149,7 +2165,7 @@ async def _run_variables_batch(
     failed = 0
     try:
         status_msg = await message.answer(
-            f"🎲 <b>Variables</b>: editando 0/{count} imágenes con {model['name']}...",
+            f"🎲 <b>Variables</b>: {verb} 0/{count} imágenes con {model['name']}...",
             parse_mode="HTML",
             reply_markup=_cancel_job_keyboard(cancel_event),
         )
@@ -2161,7 +2177,7 @@ async def _run_variables_batch(
                 )
                 return
             status_label = (
-                f"🎲 <b>Variables</b>: editando {i}/{count} imágenes con {model['name']}..."
+                f"🎲 <b>Variables</b>: {verb} {i}/{count} imágenes con {model['name']}..."
             )
             await status_msg.edit_text(
                 status_label,
@@ -2222,19 +2238,19 @@ async def _run_variables_batch(
                     if err and meta and meta.get("exhausted"):
                         variables_store.blacklist_add(variables_store.combo_key(*combo_tuple))
                         failed += 1
-                        await _notify_variables_failure(message, i, count, last_prompt)
+                        await _notify_variables_failure(message, i, count, last_prompt, label=fail_label)
                         continue
                     prompt = shuffled_prompt
                 if err:
                     failed += 1
-                    await _notify_variables_failure(message, i, count, last_prompt)
+                    await _notify_variables_failure(message, i, count, last_prompt, label=fail_label)
                     continue
                 regen_context = _build_image_regen_context(
                     model=model,
                     user_id=uid,
                     prompt=prompt,
-                    mode="edit",
-                    source_file_id=source_file_id,
+                    mode="text" if is_text else "edit",
+                    source_file_id=None if is_text else source_file_id,
                     kie_source_ref=kie_ref,
                 )
                 if use_comfyui:
@@ -2267,7 +2283,7 @@ async def _run_variables_batch(
                     )
             except Exception:
                 failed += 1
-                await _notify_variables_failure(message, i, count, last_prompt)
+                await _notify_variables_failure(message, i, count, last_prompt, label=fail_label)
                 continue
             completed += 1
 
