@@ -14,6 +14,8 @@ import subprocess
 from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 import bot
 import sessions
 
@@ -1165,3 +1167,386 @@ async def test_variables_batch_comfyui_chain_continues_after_decision(sessions_f
     assert send_img.await_count >= 3
     last_text = msg.answer.return_value.edit_text.call_args.args[0]
     assert "Listo: 2/2" in last_text
+
+
+# --- item 4: deferred branches (a)-(f) with the REAL choke -------------------
+
+
+async def test_send_comfyui_output_confirm_cancel_removes_keyboard():
+    # (a) Cancel with the decision force-resolved: the base's keyboard goes to
+    # None (NOT regen), no refine is started, the choke does not delete the
+    # status, and the pending registry is clean.
+    bot._pending_refine.clear()
+    uid = 6021
+    message = _message(uid, 91)
+    status_msg = _status_message()
+    event = bot._start_job(uid, "edit")
+
+    base_msg = MagicMock()
+    base_msg.delete = AsyncMock()
+    base_msg.edit_reply_markup = AsyncMock()
+
+    refine_mock = AsyncMock()
+
+    with patch.object(
+        bot, "_send_comfyui_image", new_callable=AsyncMock, side_effect=[base_msg]
+    ) as send_img:
+        with patch.object(bot, "_generate_comfyui_refine", new=refine_mock):
+            task = asyncio.create_task(
+                bot._send_comfyui_output(
+                    _comfyui_model(),
+                    "/tmp/base.png",
+                    "prompt",
+                    status_msg,
+                    message,
+                    "Edit",
+                    _regen_ctx(uid),
+                    meta=dict(_COMFYUI_REMOTES),
+                    cancel_event=event,
+                )
+            )
+            for _ in range(200):
+                if bot._pending_refine:
+                    break
+                await asyncio.sleep(0)
+            assert bot._pending_refine, "pending refine never registered"
+            token = next(iter(bot._pending_refine))
+            cb = MagicMock()
+            cb.from_user.id = uid
+            cb.data = f"cancel_job:{event.job_id}"
+            cb.answer = AsyncMock()
+            cb.message = status_msg
+            await bot.handle_cancel_job(cb)
+            result = await asyncio.wait_for(task, timeout=5)
+
+    assert result is True
+    refine_mock.assert_not_awaited()
+    assert send_img.await_count == 1
+    base_msg.edit_reply_markup.assert_awaited_once()
+    assert base_msg.edit_reply_markup.await_args.kwargs.get("reply_markup") is None
+    base_msg.delete.assert_not_awaited()
+    status_msg.delete.assert_not_awaited()
+    assert not bot._pending_refine
+
+
+async def test_send_comfyui_output_confirm_refine_error_single_keeps_base():
+    # (b-single) _generate_comfyui_refine -> (None, err): the base is kept and
+    # restored to the regen keyboard, the status surfaces the error.
+    bot._pending_refine.clear()
+    uid = 6022
+    message = _message(uid, 92)
+    status_msg = _status_message()
+    event = asyncio.Event()
+    event.job_id = "jobb1"
+
+    base_msg = MagicMock()
+    base_msg.delete = AsyncMock()
+    base_msg.edit_reply_markup = AsyncMock()
+
+    refine_mock = AsyncMock(return_value=(None, "Configuración de refino inválida"))
+
+    with patch.object(
+        bot, "_send_comfyui_image", new_callable=AsyncMock, side_effect=[base_msg]
+    ) as send_img:
+        with patch.object(bot, "_generate_comfyui_refine", new=refine_mock):
+            task = asyncio.create_task(
+                bot._send_comfyui_output(
+                    _comfyui_model(),
+                    "/tmp/base.png",
+                    "prompt",
+                    status_msg,
+                    message,
+                    "Edit",
+                    _regen_ctx(uid),
+                    meta=dict(_COMFYUI_REMOTES),
+                    cancel_event=event,
+                )
+            )
+            for _ in range(200):
+                if bot._pending_refine:
+                    break
+                await asyncio.sleep(0)
+            assert bot._pending_refine, "pending refine never registered"
+            token = next(iter(bot._pending_refine))
+            await bot.handle_refine_decision(_refine_callback(uid, f"refine:{token}:yes"))
+            result = await asyncio.wait_for(task, timeout=5)
+
+    assert result is True
+    refine_mock.assert_awaited_once()
+    assert send_img.await_count == 1
+    last_status = status_msg.edit_text.call_args
+    assert "Configuración de refino inválida" in last_status.args[0]
+    assert last_status.kwargs.get("reply_markup") is None
+    kb = base_msg.edit_reply_markup.await_args.kwargs.get("reply_markup")
+    assert kb == bot._image_regenerate_keyboard()
+    base_msg.delete.assert_not_awaited()
+
+
+async def test_send_comfyui_output_confirm_refine_error_album_keeps_base():
+    # (b-album) _generate_comfyui_refine -> (None, err): the confirm prompt is
+    # deleted, the base album is kept, and the status surfaces the error.
+    bot._pending_refine.clear()
+    uid = 6023
+    message = _message(uid, 93)
+    confirm_msg = MagicMock()
+    confirm_msg.delete = AsyncMock()
+    confirm_msg.edit_text = AsyncMock()
+    message.answer = AsyncMock(return_value=confirm_msg)
+    status_msg = _status_message()
+    event = asyncio.Event()
+    event.job_id = "jobb2"
+
+    base_msgs = [MagicMock(), MagicMock()]
+    for m in base_msgs:
+        m.delete = AsyncMock()
+
+    refine_mock = AsyncMock(return_value=(None, "El refino no produjo imágenes"))
+
+    with patch.object(
+        bot, "_send_comfyui_album", new_callable=AsyncMock, side_effect=[base_msgs]
+    ) as send_album:
+        with patch.object(bot, "_generate_comfyui_refine", new=refine_mock):
+            task = asyncio.create_task(
+                bot._send_comfyui_output(
+                    _comfyui_model(),
+                    ["/tmp/a.png", "/tmp/b.png"],
+                    "prompt",
+                    status_msg,
+                    message,
+                    "Edit",
+                    _regen_ctx(uid),
+                    meta=dict(_COMFYUI_REMOTES),
+                    cancel_event=event,
+                )
+            )
+            for _ in range(200):
+                if bot._pending_refine:
+                    break
+                await asyncio.sleep(0)
+            assert bot._pending_refine, "pending refine never registered"
+            token = next(iter(bot._pending_refine))
+            await bot.handle_refine_decision(_refine_callback(uid, f"refine:{token}:yes"))
+            result = await asyncio.wait_for(task, timeout=5)
+
+    assert result is True
+    refine_mock.assert_awaited_once()
+    assert send_album.await_count == 1
+    confirm_msg.delete.assert_awaited_once()
+    assert "El refino no produjo imágenes" in status_msg.edit_text.call_args.args[0]
+    for m in base_msgs:
+        m.delete.assert_not_awaited()
+
+
+@pytest.mark.parametrize("trigger", ["no", "timeout"])
+async def test_send_comfyui_output_confirm_album_final_image(monkeypatch, trigger):
+    # (c) Album + falsy decision (no, or TTL=0) -> the confirm prompt is edited
+    # to "Imagen final." (no keyboard), the status is deleted, no refine runs,
+    # and the base album is kept.
+    bot._pending_refine.clear()
+    if trigger == "timeout":
+        monkeypatch.setattr(bot, "REFINE_CONFIRM_TIMEOUT", 0)
+    uid = 6024
+    message = _message(uid, 94)
+    confirm_msg = MagicMock()
+    confirm_msg.delete = AsyncMock()
+    confirm_msg.edit_text = AsyncMock()
+    message.answer = AsyncMock(return_value=confirm_msg)
+    status_msg = _status_message()
+    event = asyncio.Event()
+    event.job_id = "jobb3"
+
+    base_msgs = [MagicMock(), MagicMock()]
+    for m in base_msgs:
+        m.delete = AsyncMock()
+
+    refine_mock = AsyncMock()
+
+    with patch.object(
+        bot, "_send_comfyui_album", new_callable=AsyncMock, side_effect=[base_msgs]
+    ) as send_album:
+        with patch.object(bot, "_generate_comfyui_refine", new=refine_mock):
+            task = asyncio.create_task(
+                bot._send_comfyui_output(
+                    _comfyui_model(),
+                    ["/tmp/a.png", "/tmp/b.png"],
+                    "prompt",
+                    status_msg,
+                    message,
+                    "Edit",
+                    _regen_ctx(uid),
+                    meta=dict(_COMFYUI_REMOTES),
+                    cancel_event=event,
+                )
+            )
+            if trigger == "no":
+                for _ in range(200):
+                    if bot._pending_refine:
+                        break
+                    await asyncio.sleep(0)
+                assert bot._pending_refine, "pending refine never registered"
+                token = next(iter(bot._pending_refine))
+                await bot.handle_refine_decision(_refine_callback(uid, f"refine:{token}:no"))
+            result = await asyncio.wait_for(task, timeout=5)
+
+    assert result is True
+    refine_mock.assert_not_awaited()
+    assert send_album.await_count == 1
+    assert confirm_msg.edit_text.await_args.args[0] == "Imagen final."
+    assert "reply_markup" not in confirm_msg.edit_text.await_args.kwargs
+    status_msg.delete.assert_awaited_once()
+    for m in base_msgs:
+        m.delete.assert_not_awaited()
+
+
+async def test_send_comfyui_output_meta_none_skips_refine_choke():
+    # (d) meta=None with comfyui_refine="1": the confirm choke is skipped and the
+    # base is sent directly (pre-item behavior). The caller leaves the keyboard
+    # to the real _send_comfyui_image default (regen keyboard) — no confirm kb.
+    bot._pending_refine.clear()
+    uid = 6025
+    message = _message(uid, 95)
+    status_msg = _status_message()
+
+    with patch.object(
+        bot, "_send_comfyui_image", new_callable=AsyncMock, return_value=MagicMock()
+    ) as send_img:
+        with patch.object(bot, "_send_comfyui_confirm_refine", new_callable=AsyncMock) as confirm_refine:
+            ok = await bot._send_comfyui_output(
+                _comfyui_model(),
+                "/tmp/base.png",
+                "prompt",
+                status_msg,
+                message,
+                "Edit",
+                _regen_ctx(uid),
+            )
+
+    assert ok is True
+    assert send_img.await_count == 1
+    confirm_refine.assert_not_awaited()
+    assert not bot._pending_refine
+    assert "reply_markup" not in send_img.await_args.kwargs
+
+
+async def test_album_batch_comfyui_chain_real_choke(sessions_file, generation_refs_file, monkeypatch):
+    # (e) Album batch (2 photos) with the REAL choke: each photo is a single
+    # image with the confirm keyboard on it; the chain pauses per item. Item 1
+    # confirms (yes) and refines; item 2 keeps the base (no). No hang.
+    monkeypatch.setattr(bot, "COMFYUI_HOST", "1.2.3.4")
+    uid = 1102
+    sessions.set_comfyui_config(uid, model="krea2")
+    bot.user_state[uid] = {"model": "comfyui"}
+    anchor_msg = _album_message(user_id=uid, message_id=8, file_id="p1")
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        return (["/tmp/a.png"], None, dict(_COMFYUI_REMOTES))
+
+    base1 = MagicMock()
+    base1.delete = AsyncMock()
+    base1.edit_reply_markup = AsyncMock()
+    refined1 = MagicMock()
+    refined1.delete = AsyncMock()
+    refined1.edit_reply_markup = AsyncMock()
+    base2 = MagicMock()
+    base2.delete = AsyncMock()
+    base2.edit_reply_markup = AsyncMock()
+
+    refine_mock = AsyncMock(return_value=(["/tmp/refined.png"], None))
+
+    with patch.object(bot, "_download_telegram_file_id", new_callable=AsyncMock):
+        with patch.object(bot, "generate_image", side_effect=_fake_gen):
+            with patch.object(
+                bot, "_send_comfyui_image", new_callable=AsyncMock,
+                side_effect=[base1, refined1, base2],
+            ) as send_img:
+                with patch.object(bot, "_generate_comfyui_refine", new=refine_mock):
+                    with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_proc:
+                        task = asyncio.create_task(
+                            bot._process_album_edit_from_file_ids(anchor_msg, "cambia el fondo", ["p1", "p2"])
+                        )
+                        # item 1: confirm refine (yes)
+                        for _ in range(200):
+                            if bot._pending_refine:
+                                break
+                            await asyncio.sleep(0)
+                        assert bot._pending_refine, "pending refine (item 1) never registered"
+                        token1 = next(iter(bot._pending_refine))
+                        await bot.handle_refine_decision(_refine_callback(uid, f"refine:{token1}:yes"))
+                        # item 2: keep the base (no)
+                        for _ in range(200):
+                            if any(t != token1 for t in bot._pending_refine):
+                                break
+                            await asyncio.sleep(0)
+                        assert any(t != token1 for t in bot._pending_refine), \
+                            "pending refine (item 2) never registered"
+                        token2 = next(t for t in bot._pending_refine if t != token1)
+                        await bot.handle_refine_decision(_refine_callback(uid, f"refine:{token2}:no"))
+                        result = await asyncio.wait_for(task, timeout=10)
+
+    assert result is True
+    refine_mock.assert_awaited_once()
+    assert send_img.await_count == 3
+    mock_proc.assert_not_awaited()
+    last_text = anchor_msg.reply.return_value.edit_text.call_args.args[0]
+    assert "Completadas 2/2" in last_text
+    assert not bot._pending_refine
+
+
+async def test_variables_batch_comfyui_cancel_mid_chain_stops_clean(sessions_file, variables_file, monkeypatch):
+    # (f) Cancel during the /variables chain: the loop stops cleanly with
+    # "⏹ Cancelado. Completadas X/N" (no "Listo:"), item 2 never generates,
+    # and the job is finished. The exact X is not pinned (A6).
+    monkeypatch.setattr(bot, "COMFYUI_HOST", "1.2.3.4")
+    bot.user_state[1001] = {"model": "comfyui"}
+    msg = _photo_message(caption="/variables 2")
+    msg.answer.return_value = _status_message()
+
+    gen_calls = []
+
+    async def _fake_gen(model, prompt, image_data=None, **kwargs):
+        gen_calls.append(prompt)
+        return (["/tmp/v.png"], None, dict(_COMFYUI_REMOTES))
+
+    base_msg = MagicMock()
+    base_msg.delete = AsyncMock()
+    base_msg.edit_reply_markup = AsyncMock()
+
+    refine_mock = AsyncMock()
+
+    with patch.object(bot, "generate_image", side_effect=_fake_gen):
+        with patch.object(
+            bot, "_send_comfyui_image", new_callable=AsyncMock, side_effect=[base_msg]
+        ) as send_img:
+            with patch.object(bot, "_generate_comfyui_refine", new=refine_mock):
+                with patch(
+                    "variables_store.random_combination",
+                    return_value=("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
+                ):
+                    task = asyncio.create_task(
+                        bot._run_variables_batch(msg, 2, BytesIO(b"img"), None, source_file_id="p1")
+                    )
+                    # item 1 reaches the refine choke; cancel mid-chain.
+                    for _ in range(200):
+                        if bot._pending_refine:
+                            break
+                        await asyncio.sleep(0)
+                    assert bot._pending_refine, "pending refine (item 1) never registered"
+                    token1 = next(iter(bot._pending_refine))
+                    job = next(j for j in bot._active_jobs[1001] if j["kind"] == "variables")
+                    cb = MagicMock()
+                    cb.from_user.id = 1001
+                    cb.data = f"cancel_job:{job['id']}"
+                    cb.answer = AsyncMock()
+                    cb.message = msg.answer.return_value
+                    await bot.handle_cancel_job(cb)
+                    await asyncio.wait_for(task, timeout=10)
+
+    refine_mock.assert_not_awaited()
+    assert len(gen_calls) == 1  # item 2 must NOT generate
+    assert send_img.await_count == 1
+    last_text = msg.answer.return_value.edit_text.call_args.args[0]
+    assert last_text.startswith("⏹ Cancelado.")
+    assert "Completadas" in last_text
+    assert "Listo:" not in last_text
+    assert 1001 not in bot._active_jobs
+    assert not bot._pending_refine

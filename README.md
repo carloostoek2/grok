@@ -38,6 +38,21 @@ Use `/config` (or `/video`) to change the model (`grok-imagine-video` base or `g
 
 The lists and the prompt template are managed with `/listas` (Telegram admin panel, private chats only): add / edit / delete items per list and customize the template with the `{pose}`, `{angle}`, `{action}` placeholders. Lists persist in `variables_lists.json`.
 
+## ComfyUI image editing (refine confirmation)
+
+When the configured ComfyUI model has refine enabled (default), each generated image goes through a 2-stage flow: the **base** is sent first with `[✨ Refinar][⏭ Continuar]` buttons.
+
+- `✨ Refinar` re-refines the SAME base (same model/prompt; uses the box's `REFINE_ONLY` mode) and posts the refined image.
+- `⏭ Continuar` keeps the base as the final result (the base moves to the "Regenerar" keyboard).
+- If no decision arrives within the TTL (default **300 s**, env `REFINE_CONFIRM_TIMEOUT`), the base is final.
+- Cancelling during a refine (`Cancelar`) respects the chain in progress: in `/variables` (and album batch) the batch stops cleanly with "Cancelado. Completadas X/N" and the base is kept.
+
+ComfyUI multi-photo albums are NOT routed: `handle_album` does not process ComfyUI media groups (defensive/dead branch of the bot). The single-image confirm keyboard rides on the image itself.
+
+### ComfyUI refine — deploy note (operator)
+
+The refine flow requires the `REFINE_ONLY` mode on the ComfyUI box: `gen_comfy.py` must be the updated version (repo `comfyui-vast-setup`). Deploy is MANUAL (not automatic): `cp gen_comfy.py /workspace/gen_comfy.py` on the box. Without that deploy, refine is not available and the base is kept.
+
 ## Environment variables
 
 | Variable | Required | Description |
@@ -48,6 +63,7 @@ The lists and the prompt template are managed with `/listas` (Telegram admin pan
 | `KIE_API_KEY` | No | Kie.ai API key (required when using Kie.ai provider via `/config` or `/imaginess`) |
 | `ALLOWED_TELEGRAM_IDS` | Yes (recommended) | Comma-separated user IDs; only these users can use the bot (enforced on all messages and callbacks) |
 | `VARIABLES_ADMIN_IDS` | No | Comma-separated user IDs allowed to edit the `/listas` panel (poses/ángulos/acciones). Defaults to `ALLOWED_TELEGRAM_IDS` when unset, and to everyone when neither is set |
+| `REFINE_CONFIRM_TIMEOUT` | No | TTL in seconds for the ComfyUI refine confirmation (default 300); without a decision the base is final |
 
 ## Deployment
 
