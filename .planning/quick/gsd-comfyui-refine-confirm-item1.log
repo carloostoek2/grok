@@ -1,0 +1,70 @@
+
+### 2026-08-19T03:40:00Z gsd-executor comfyui-refine-confirm-item1 inicio
+- leido PLAN.md completo, AGENTS.md (REGLA #1), work-unit-commits SKILL.md, gen_comfy.py, README setup
+- verificado: setup repo limpio, pytest 8.4.2, lineas PLAN <-> gen_comfy.py coinciden (L188 refine_cfg, L190 comment identity)
+- orden: TASK1 harness RED -> TASK2 impl -> TASK3 README+commit
+
+### 2026-08-19T03:40:10Z TASK 1 gate: escribir tests_refine_only.py (sin tocar gen_comfy.py)
+- tests_refine_only.py creado (6 tests, solo stdlib + monkeypatch, sin mockear os.path.exists)
+
+### 2026-08-19T03:41:20Z TASK 1 RESULTADO: ROJO confirmado
+- 5 failed (nuevos), 1 passed (guard test_without_refine_only_keeps_refine1_flow)
+- fallos: FileNotFoundError /workspace/payloads/qwen.json (main cae a generacion, exactamente como predijo el PLAN)
+
+### 2026-08-19T03:41:30Z TASK 2 gate: implementar branch REFINE_ONLY + docstring en gen_comfy.py
+- branch tras L188 (refine_cfg), antes del comment identity L190; docstring tras L11 (REFINE_FACES), antes L12 (Imprime...)
+
+### 2026-08-19T03:42:00Z TASK 2 RESULTADO: VERDE
+- pytest tests_refine_only.py: 6 passed
+- syntax check gen_comfy.py: ok
+
+### 2026-08-19T03:42:10Z TASK 3 gate: README (seccion Refinamiento) + commit unico
+- README: linea env del refino + bloque refine-only tras Fix de RAW
+- commit: feat(gen_comfy): add REFINE_ONLY mode to refine pre-generated bases (sin Co-Authored-By)
+
+### 2026-08-19T03:43:00Z TASK 3 RESULTADO: commit 384002c, git status limpio
+- harness final: 6 passed; mensaje sin Co-Authored-By; no-touch intacto (bot.py/payloads/workflows/nodes/scripts/setup.sh sin cambios)
+
+### 2026-08-19T03:43:10Z SELF-CHECK PASSED
+- Los 6 tests pasan; branch ortogonal (REFINE_ONLY ausente -> flujo byte-idéntico, guard verde)
+- Commit unico convencional; sin atribucion AI
+- Residuales (bajos, no bloqueantes):
+  - pytest 8.4.2 auto-carga el plugin pytest_asyncio en el venv de grok -> DeprecationWarning
+    'asyncio.get_event_loop_policy' en cada run. Ruido solo; tests sincronos pasan.
+  - PLAN marcaba docstring L10/L12 (refine_faces/Imprime) con offset de 1 vs archivo real (L11/L12); anclas textuales inequívocas, sin contradicción.
+  - _clean_env requerio **extra kwargs (MODEL/LORA/INPUT_IMAGE) para el test identity-edit; extension natural del helper, firma base intacta.
+- Nota: engram mem_save NO disponible en esta sesion (sin tools MCP mem_*); gotcha clave documentado aqui para el orquestador.
+
+### 2026-08-19T03:46:00Z gsd-executor FIX ROUND (review 04c0e6fe) inicio
+- review: 10 open (9 general+tests arreglables, #10 wontfix). No tocar run_refine/_run_graph/build_refine_graph ni flujo de generacion.
+
+### 2026-08-19T03:46:10Z FIX 1-4 gen_comfy.py + README
+- guard de extension de imagen en loop refine-only (no es imagen, se omite: {base}) + continue, igual que main()
+- os.path.exists -> os.path.isfile (rechaza directorios)
+- bases vacias tras split/strip/filter -> exit 2 (cubre REFINE_INPUT=",")
+- README: nota refino secuencial ~20min/base vs timeout 600s del bot (item 2)
+
+### 2026-08-19T03:47:00Z FIX 5-9 tests_refine_only.py
+- parametriza TRUTHY (1,true,yes," TRUE ") branch corre; FALSY (0,false,"",None) branch omitido + REFINE_INPUT ignorado
+- happy-path: base b devuelve 2 paths, ambos en orden en stdout
+- prefijos stderr completos: base no existe/refino fallo/no es imagen
+- test segmentos vacios a,,gone, -> run_refine exactamente [a]
+- _clean_env delenv set completo REFINE_* + LORA + INPUT_IMAGE; test REFINE_FACES=0 -> faces=False
+
+### 2026-08-19T03:48:00Z FIX RESULTADO
+- harness setup: 16 passed (tests_refine_only.py)
+- regresion grok: 138 passed (test_variables_command.py + test_kie_provider.py)
+- review file: 9 fixed, #10 wontfix + Response (harness corre SIN box a proposito)
+
+### 2026-08-19T03:48:30Z COMMIT work-unit
+- fix(gen_comfy): harden REFINE_ONLY mode (image guard, isfile, input validation) -> 1be1d9f
+- git status setup limpio; no-touch intacto (bot.py/payloads/workflows/nodes/scripts/setup.sh sin cambios)
+
+### 2026-08-19T03:49:00Z SELF-CHECK PASSED
+- Harness 16/16 verde; regresion 138/138 verde; review file 9 fixed + 1 wontfix
+- Commit unico convencional, sin Co-Authored-By; guard de extension replica main() byte-a-byte en mensaje
+- Residuales (bajos, no bloqueantes):
+  - #10 wontfix por decision: RED via FileNotFoundError es la senal natural de branch faltante; el harness no corre en box
+  - engram mem_save NO disponible (sin tools MCP mem_*); descubrimiento no-obvio documentado aqui:
+    la rama refine-only ahora filtra no-imagenes ANTES de isfile (un .mp4 inexistente se reporta
+    como "no es imagen" y no como "base no existe" — orden de guards distinto al del flujo completo)

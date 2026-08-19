@@ -1,0 +1,90 @@
+# gsd-executor — comfyui-refine-confirm-item3 (2026-08-19)
+
+Plan: .planning/quick/20260819-comfyui-refine-confirm-item3/PLAN.md
+Branch: reset (baseline de la suite 428 passed, 2 skipped).
+
+## Task 1 — Tests ROJOS (bot.py NO editado)
+
+Baseline capturado: `./venv/bin/python -m pytest tests -q` -> 428 passed, 2 skipped.
+
+Append 6 tests de cadena a `tests/test_comfyui_refine.py` (helpers nuevos locales:
+`_photo_message`, `_album_message`, `_COMFYUI_REMOTES`; imports `sessions`, `BytesIO`).
+
+RED confirmado (razones correctas, columna "RED por" del PLAN):
+- test_regen_comfyui_passes_meta_and_cancel_event -> KeyError: 'meta' (call site no pasa meta)
+- test_text_gen_comfyui_passes_meta_cancel_none -> KeyError: 'meta'
+- test_reply_edit_comfyui_passes_meta_cancel_none -> KeyError: 'meta'
+- test_variables_batch_comfyui_passes_meta_and_cancel_event -> KeyError: 'meta'
+- test_album_batch_comfyui_routes_to_send_comfyui_output -> AssertionError: assert 0 == 2
+  (mock_send.await_count; álbum rutea por process_image_result)
+- test_variables_batch_comfyui_chain_continues_after_decision -> AssertionError:
+  "pending refine (item 1) never registered" (choke no se activa sin meta)
+
+## Task 2 — Implementación (5 bloques de "Exact implementation")
+
+1. regen (handle_regenerate_image): + meta=kie_meta, cancel_event=cancel_event
+2. text-gen (_do_generate_text): + meta=kie_meta, cancel_event=None
+3. variables (_run_variables_batch): + meta=meta, cancel_event=cancel_event
+4. reply edit (handle_reply_edit): + meta=kie_meta, cancel_event=None
+5. álbum (_process_album_edit_from_file_ids): rama comfyui -> _send_comfyui_output
+   (patrón L1739; delete_status=False, meta=kie_meta, cancel_event=cancel_event);
+   process_image_result envuelto en else: (sin cambios de kwargs).
+
+Harness: 35 passed (29 item-2 + 6 nuevos).
+Regresión acotada: tests/test_variables_command.py::test_batch_comfyui_uses_selected_model_and_sends_via_comfyui + tests/test_album_batch.py -> 13 passed (A6/A5).
+Syntax check bot.py: ok.
+
+## Task 3 — Regresión + commit
+
+Suite completa: 434 passed, 2 skipped (428 + 6 nuevos; sin fallos NUEVOS vs baseline).
+No-touch verificado con `git diff --stat`: solo bot.py + tests/test_comfyui_refine.py.
+
+Commit único (work-unit, sin Co-Authored-By):
+  378708d feat(comfyui): wire refine confirmation into batch chains
+
+## Gotchas no obvios
+
+- En el test de cadena, `_send_comfyui_image` se llama 3 veces (base ítem 1, refinado ítem 1,
+  base ítem 2). El `side_effect=[base_msg, refined_msg]` literal del PLAN agota la lista en la
+  3ª llamada -> StopAsyncIteration (verificado en el venv), lo que rompería el ítem 2 y el
+  resumen "Listo: 2/2". Se usó `side_effect=[base_msg, refined_msg, base_msg]` (3 elementos)
+  para conservar la intención del PLAN (3 envíos, assert `await_count >= 3`, resumen 2/2).
+- El poll del ítem 2 espera un token distinto de token1 (`any(t != token1 for t in _pending_refine)`)
+  porque `handle_refine_decision` resuelve el future pero NO borra la entry; la limpia el
+  `finally: _drop_pending_refine` de `_send_comfyui_confirm_refine`.
+
+## Self-check
+
+PASSED — TDD order respetado (RED -> GREEN -> regresión), 6 tests nuevos verdes, 12+ de item 2
+verdes, suite completa sin fallos nuevos, commit único convencional sin Co-Authored-By,
+no-touch intacto.
+
+## Fix round — review item 3 (hallazgos open: I3-B1, I3-S1, I3-N3, I3-N4)
+
+Fuente: /tmp/grok-hardener-review-f3d2f3d2.md. Resueltos 1 bug + 1 suggestion + 2 nits.
+Wontfix no re-abiertos (I3-N1, I3-N2, I3-P1).
+
+1. I3-B1 (BUG) — bot.py `_send_comfyui_confirm_refine`: el edit de status "Refinando…" ahora
+   renderiza `_cancel_job_keyboard(cancel_event)` SOLO si `cancel_event is not None`; en flujos
+   sin job (reply/text-gen) usa `reply_markup=None` y no expone botón "Cancelar" jobless (que
+   cancelaría el job no relacionado más reciente y resolvería todos los refines pendientes).
+   Test nuevo: `test_send_comfyui_output_confirm_yes_no_job_no_jobless_cancel_button`.
+2. I3-S1 (SUGGESTION) — rama comfyui del álbum (bot.py `_process_album_edit_from_file_ids`)
+   anotada como defensiva/dead con comentario WHY (gate real en handle_album ~2559). Sin
+   extender handle_album (out of scope).
+3. I3-N3 (NIT) — `mock_proc.assert_not_awaited()` añadido al test de wiring de variables.
+4. I3-N4 (NIT) — mock muerto `_send_comfyui_album` removido del test de cadena de variables
+   (con dedent del cuerpo).
+
+Harness: tests/test_comfyui_refine.py -> 36 passed.
+Suite completa: 435 passed, 2 skipped (baseline 434 + 1 test nuevo).
+Review actualizado: I3-B1/I3-S1/I3-N3/I3-N4 -> fixed.
+
+Commit único (work-unit, sin Co-Authored-By):
+  71d8beb fix(comfyui): avoid jobless cancel during refine in no-job flows
+
+## Self-check (fix round)
+
+PASSED — fix fiel a la fuente, tests verdes, suite completa sin fallos, review marcado fixed,
+commit único convencional sin Co-Authored-By, no-touch intacto (solo bot.py +
+tests/test_comfyui_refine.py).

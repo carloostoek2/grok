@@ -1,0 +1,18 @@
+
+### 2026-08-19T03:5x:xxZ comfyui-refine-confirm-item2
+- leido bot.py: _finish_job(483), _model_from_regen(695), cancel(1098)/confirm(1118)/regen(1190),
+  call sites _send_comfyui_output(1271,1476,1637,2086,2346), generate_image(3085)/_generate_once(3130),
+  _comfyui_run_remote(3199)/_pull(3227)/_generate_comfyui(3274)/_send_comfyui_output(3412), _update_retry_status(3825)
+- 7 call sites de generate_image (1255,1467,1622,1752,2035,2054,2333); meta consumers solo .get()
+- inspeccionado aiogram 3.28.2 venv: Dispatcher.start_polling(handle_as_tasks=True, tasks_concurrency_limit=None);
+  _polling hace asyncio.create_task(handle_update) SIN await -> updates CONCURRENTES (mismo event loop)
+- evidencia adicional en codigo: confirm(1118) await inline _do_generate_video/_do_generate_text mientras cancel_job(1098)
+  debe correr; retry loop asyncio.sleep(3126) cede; _update_retry_status(3833) re-aplica reply_markup (fix regression)
+- tests: test_variables_command.py:927 trio comfyui (mock generate_image + AsyncMock _send_comfyui_output);
+  test_cancel_job.py:267,217,326; test_kie_provider.py:150,1430,1462; test_round5.py:79,173
+- veredicto: VIABLE con requisitos (cancel resuelve futures; reply_markup en cada edit; timeout SSH >= N*1200; TTL recomendado)
+
+### 2026-08-19 FIN análisis
+- veredicto: VIABLE (requiere ajuste en cancel/TTL/reply_markup); concurrencia: SEGURA con evidencia de source aiogram
+- top riesgos: reply_markup gotcha, album sin inline keyboard, job slot ocupado sin TTL, timeout SSH refine, regex/exit codes
+- tests a correr: test_variables_command, test_cancel_job, test_kie_provider, test_round5 + suite completa

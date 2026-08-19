@@ -1,0 +1,8 @@
+
+### 2026-08-19T03:34:30Z comfyui-refine-confirm-item1
+- read AGENTS.md, gen_comfy.py, README setup
+- grep bot.py _generate_comfyui/_comfyui_run_remote REFINE
+
+### 2026-08-19T03:35:43Z FIN análisis
+- veredicto: VIABLE; riesgos: timeout SSH 600s, run_refine missing->base, quoting bajo
+- tests bot: ninguno toca gen_comfy; setup sin suite -> harness propuesto

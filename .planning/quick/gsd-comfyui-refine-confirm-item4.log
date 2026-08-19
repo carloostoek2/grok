@@ -1,0 +1,78 @@
+# gsd-executor — comfyui-refine-confirm item 4 (tests diferidos + README + deploy note)
+
+Date: 2026-08-19 · Branch: reset · Runner: ./venv/bin/python -m pytest
+
+## Task 1 — Tests diferidos (a)-(f) en tests/test_comfyui_refine.py
+
+Baseline capturado ANTES de escribir nada:
+    ./venv/bin/python -m pytest tests -q 2>&1 | tail -3
+    → 435 passed, 2 skipped
+
+Append de 7 funciones de test (8 casos, (c) parametrizada) al final del archivo:
+
+- (a) test_send_comfyui_output_confirm_cancel_removes_keyboard — cancel single end-to-end vía
+      handle_cancel_job (event de _start_job). Assert: result True; refine NOT awaited;
+      base_msg.edit_reply_markup 1 vez con reply_markup=None; base_msg.delete NOT awaited;
+      status_msg.delete NOT awaited; _pending_refine vacío.
+- (b) test_send_comfyui_output_confirm_refine_error_single_keeps_base — refine (None, err): base
+      conservada con _image_regenerate_keyboard(); status surfacea el error; base NOT borrada.
+- (b) test_send_comfyui_output_confirm_refine_error_album_keeps_base — confirm_msg.delete awaited;
+      send_album 1 (solo base); base álbum conservada; status con el error.
+- (c) test_send_comfyui_output_confirm_album_final_image[no|timeout] — confirm_msg editado a
+      "Imagen final." sin reply_markup; status_msg.delete; refine NOT awaited; base álbum conservada.
+- (d) test_send_comfyui_output_meta_none_skips_refine_choke — meta=None → _send_comfyui_confirm_refine
+      NOT awaited; send_img 1; _pending_refine vacío.
+- (e) test_album_batch_comfyui_chain_real_choke — álbum batch 2 fotos con choke REAL: refine await 1
+      (ítem 1 yes), send_img 3 (base1, refined1, base2), status "Completadas 2/2", sin hang.
+- (f) test_variables_batch_comfyui_cancel_mid_chain_stops_clean — cancel mid-chain: generate_image
+      await 1 (ítem 2 NO genera), refine NOT awaited, status "⏹ Cancelado. Completadas", sin "Listo:",
+      job finalizado.
+
+Choke REAL (no mock de _send_comfyui_output / _send_comfyui_confirm_refine / handle_refine_decision
+/ handle_cancel_job). Mock solo bordes externos: _send_comfyui_image, _send_comfyui_album,
+_generate_comfyui_refine, generate_image, _download_telegram_file_id. TTL vía
+monkeypatch.setattr(bot, "REFINE_CONFIRM_TIMEOUT", 0) (caso timeout de (c)).
+
+Resultado:
+    ./venv/bin/python -m pytest tests/test_comfyui_refine.py -q
+    → 44 passed (GREEN a la primera; sin bugs expuestos, sin cambios en bot.py)
+
+## Task 2 — README + deploy note
+
+README.md: nueva sección "ComfyUI image editing (refine confirmation)" (base → Refinar/Continuar →
+refino de la MISMA base; Continuar = base final; TTL 300s env REFINE_CONFIRM_TIMEOUT → base final;
+cancel respeta la cadena; NO afirma álbumes comfyui multi-foto) + subsección deploy note
+(REFINE_ONLY, cp gen_comfy.py /workspace/gen_comfy.py, manual) + fila REFINE_CONFIRM_TIMEOUT en la
+tabla de env. Resto del README intacto (git diff --stat: README.md +16).
+
+## Task 3 — Regresión + commit work-unit
+
+    ./venv/bin/python -m pytest tests -q 2>&1 | tail -3
+    → 443 passed, 2 skipped   (baseline 435+2 → +8 tests, sin fallos NUEVOS)
+
+Commit único:
+    git add tests/test_comfyui_refine.py README.md
+    git commit -m "feat(comfyui): cover refine deferral branches + README"
+    → 05c70c0
+
+No incluidos (untracked pre-existentes, fuera del work-unit): .grok/, .planning/, variables_extract/.
+git status limpio salvo esos untracked.
+
+## Nota — desviación menor del PLAN (assert (d))
+
+El PLAN pedía: send_img.await_args.kwargs.get("reply_markup") == _image_regenerate_keyboard().
+En producción el path meta=None NO pasa reply_markup a _send_comfyui_image (el teclado regen default
+se aplica DENTRO de _send_comfyui_image, L3550). Como ese sender está mockeado, el default interno es
+inobservable; el assert del PLAN habría FALLADO pese a código correcto (no es un bug). Se adaptó a
+"reply_markup" not in kwargs — pin del comportamiento observable real: el caller deja el teclado al
+default regen del sender. Contrato del branch (d) intacto (skip del choke, base final directa).
+
+## Self-check
+
+[x] Task 1: tests (a)-(f) existen y pasan (44 passed en el harness, choke REAL).
+[x] Task 2: README con sección ComfyUI + fila env + deploy note; sin afirmaciones de álbum multi-foto.
+[x] Task 3: suite completa 443 passed, 2 skipped (sin fallos NUEVOS vs baseline 435+2).
+[x] bot.py sin cambios (git diff --stat vacío para bot.py); maquinaria item 2 / wiring item 3 intactos.
+[x] Commit único convencional sin Co-Authored-By: 05c70c0 feat(comfyui): cover refine deferral branches + README.
+
+SELF-CHECK PASSED

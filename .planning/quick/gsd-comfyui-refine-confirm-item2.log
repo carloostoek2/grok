@@ -1,0 +1,165 @@
+# gsd-executor log — comfyui-refine-confirm-item2
+
+plan: .planning/quick/20260819-comfyui-refine-confirm-item2/PLAN.md
+repo: /home/ubuntu/repos/grok (branch reset)
+runner: ./venv/bin/python -m pytest (pytest 8.4.2, asyncio_mode=auto, testpaths=tests)
+
+## Gate 0 — pre-flight (done)
+- Skills cargados: work-unit-commits, test-quality-flow, telegram-bot-ux-keyboards.
+- PLAN leído COMPLETO (3 tasks, 14 bloques, A1-A11). Líneas verificadas contra bot.py.
+- Imports bot.py: re, os, uuid, asyncio, InlineKeyboardMarkup/Button, types, BufferedInputFile — todos presentes.
+- Baseline suite completa (Task 1 requirement): 399 passed, 2 skipped, 2742 warnings.
+- conftest.py: fixture reset_runtime_state con bot._active_jobs.clear() — ahí se añade bot._pending_refine.clear().
+
+SELF-CHECK: PASSED
+
+## Task 1 — harness tests/test_comfyui_refine.py en ROJO
+- Crear harness (12 tests) y 1 línea en tests/conftest.py.
+- bot.py NO se edita en esta task.
+
+### Task 1 edits
+- tests/test_comfyui_refine.py: 12 tests creados (base-only meta, refine-only, path validation,
+  choke yes/no/timeout single, yes album, decision idempotency/wrong-user, cancel force-resolve,
+  finish-job cleanup).
+- tests/conftest.py: añadida bot._pending_refine.clear() en fixture reset_runtime_state (tras
+  bot._active_jobs.clear(), setup). Nota: bot.py aún no define _pending_refine -> los tests del
+  harness fallan en el fixture (AttributeError) => RED esperado. Se implementa en Task 2.
+
+SELF-CHECK: PASSED (harness y conftest escritos; bot.py NO editado)
+
+### Task 1 verification (RED)
+pytest tests/test_comfyui_refine.py -q -> 12 errors (AttributeError via fixture: bot._pending_refine
+no existe en bot.py todavía). RED confirmado por los motivos esperados (funciones/params inexistentes).
+Corregida sintaxis del harness: MagicMock(from_user.id=...) -> helper _refine_callback.
+
+SELF-CHECK: PASSED (Task 1 done)
+
+## Task 2 — implementar maquinaria en bot.py (14 bloques)
+- Aplicar bloques 1-14 EXACTOS; no tocar 4 call sites no-wired, _model_from_regen, get_model,
+  _comfyui_is_video, process_image_result, _generate_kie_once, retry generate_image.
+
+### Task 2 verification
+- 14 bloques aplicados en bot.py en orden. diff = exactamente los 14 hunks (ver git diff).
+- No-touch verificado: 4 call sites (1346 regen, 1551 text-gen, 2162 variables, 2422 reply)
+  siguen SIN meta -> choke inactivo -> envían base sin refinar (estado intermedio ítem 3).
+  _model_from_regen/get_model/_comfyui_is_video/process_image_result/_generate_kie_once/
+  _process_album_edit_from_file_ids: intactos. gen_comfy.py/comfyui-vast-setup: sin tocar, sin deploy.
+- generate_image propaga meta (return output, None, meta) -> Truth 1 OK.
+- Syntax: ast.parse ok.
+- Harness: 12 passed.
+
+### Gotchas descubiertos (para engram; mem_save no disponible en este executor — registrados aquí)
+1. Bloque 13 pasaba `refined` (lista de _generate_comfyui_refine) a _send_comfyui_image, que hace
+   open(str(output)): una lista rompería en runtime (single-refine-yes no mostraría el refinado).
+   La tabla de tests exige output="/tmp/refined.png" (string). Corregido con unwrap mínimo
+   `single_refined = refined[0] if isinstance(refined, list) else refined` — espeja el unwrap
+   de la base (single = output[0] if list). Desviación documentada del bloque 13, exigida por la
+   tabla de tests y necesaria para runtime correcto.
+2. La línea de conftest (bot._pending_refine.clear()) en Task 1 hace que TODOS los tests del
+   harness fallen vía AttributeError en el fixture (bot.py no define _pending_refine hasta Task 2).
+   RED correcto pero el error ocurre en setup del fixture, no en el cuerpo. Transitorio: resuelto
+   en Task 2.
+
+SELF-CHECK: PASSED (Task 2 done)
+
+## Task 3 — regresión + commit
+- pytest tests -q: 411 passed, 2 skipped (baseline 399+2) => +12 nuevos, 0 fallos nuevos.
+- Commit work-unit único.
+
+### Task 3 verification
+- pytest tests -q: 411 passed, 2 skipped (baseline 399 passed, 2 skipped) => 0 fallos nuevos.
+- pytest tests/test_comfyui_refine.py -q: 12 passed (post-commit).
+- Commit: 2ff0cfd feat(comfyui): two-stage refine with interactive confirmation (sin Co-Authored-By).
+- git status: solo quedan untracked pre-existentes (.grok/, .planning/, variables_extract/) que NO
+  son parte de este work-unit (existían antes del inicio).
+
+SELF-CHECK: PASSED (pipeline completo: Task 1 RED -> Task 2 GREEN -> Task 3 regresión + commit)
+
+### 2026-08-19T05:05:00Z gsd-executor FIX ROUND (review bbd31049) inicio
+- review: 20 hallazgos (18 open + 2 wontfix: T-S5 item 4, P-N1 pipeline artifacts). NO se re-abren.
+- No tocar contrato cubierto (choke, TTL, base-only); solo los hallazgos.
+
+### BUGS
+- B1: _cancel_pending_refines_for_user(user_id, job_id) filtra entry["job_id"]==job_id;
+  fallback all-for-user solo con job_id=None (espeja _request_cancel_job). Call site pasa job_id.
+  Entries ya guardan job_id (de cancel_event.job_id). +2 tests scoping.
+- B2: re-check _job_cancelled(cancel_event) DESPUES de await _generate_comfyui_refine, antes de
+  enviar el refinado. En cancel: no se envia refinado, base conservada (single -> regenerate kb,
+  album -> se conserva album + delete confirm prompt), status "Cancelando…" intacto.
+
+### SUGGESTIONS
+- G-S1: _comfyui_run_remote devuelve (lines, returncode); rc None si ssh/timeout. Refine mapea
+  rc 2 -> "Configuracion de refino invalida en el box.", 3 -> "El refino no produjo imagenes.",
+  otros -> generico. Cambio de firma -> 2 tests existentes actualizados a tupla.
+- G-S2/P-S1: base album None -> _drop_pending_refine + return False antes de confirm_msg;
+  refined album None -> error en status_msg + conservar base + return False (truthful).
+  single refined None -> return False (antes True).
+- G-S3: en "yes" -> base keyboard _refining_keyboard() (noop callback "refine_noop" + handler
+  handle_refine_noop), status_msg -> "Refinando…" con cancel kb preservado; album: confirm_msg
+  -> "Refinando…". NOTA: texto-solo en InlineKeyboardButton lo rechaza la Bot API (parse error);
+  por eso noop callback (patron estandar para boton no-interactivo).
+- G-S4: comentarios "Item 2"/"(A7/A8)" reescritos como WHY concisos (contrato two-step, timeout).
+
+### NITS
+- G-N1: status_msg param fuera de _generate_comfyui y _generate_comfyui_refine (+ arg del call).
+- G-N2: conftest teardown limpia bot._pending_refine (espejo de _active_jobs).
+
+### TESTS (test_comfyui_refine.py: 12 -> 26)
+- T-S1: assert base single kwargs reply_markup==_refine_confirm_keyboard(token), save_ref True,
+  delete_status False + unit test directo del keyboard (2 callback_data).
+- T-S2: album: message.answer kb == _refine_confirm_keyboard(token); base album save_ref/delete_status.
+- T-S3: TimeoutExpired en to_thread -> _comfyui_run_remote devuelve ([], None) sin lanzar (+ rc mapping).
+- T-S4: _generate_once rama comfyui propaga meta.
+- T-S6: wan_i2v + meta -> _send_comfyui_video awaited, confirm/image NO.
+- T-N1: 3 bases -> timeout == 1200*3+300 y REFINE_INPUT con CSV join.
+- T-N2: remote_paths vacio -> err no-None, run_remote no llamado.
+- T-N3: refine:oops -> "Accion invalida."; refine:{token}:maybe -> resuelve False.
+- T-N4: base single send None -> False y token fuera de _pending_refine (+ album base failure,
+  + album refined-send failure -> False).
+
+### VERIFICACION
+- harness: 26 passed (tests/test_comfyui_refine.py -q).
+- regresion: 425 passed, 2 skipped (baseline 411 + 2).
+- review file: 18 fixed, 2 wontfix (T-S5, P-N1) intactos.
+
+### Descubrimientos no-obvios
+- InlineKeyboardButton con solo text lo rechaza la Bot API ("Text buttons are unallowed in the
+  inline keyboard") -> para el placeholder "Refinando…" se usa callback noop (refine_noop) + handler.
+
+### 2026-08-19T05:06:00Z COMMIT work-unit
+- fix(comfyui): cancel scoping + post-refine cancel + refine error mapping (sin Co-Authored-By).
+
+### 2026-08-19T05:07:00Z SELF-CHECK PASSED
+- Harness 26/26 verde; regresion 425/425 + 2 skipped verde; review 18 fixed + 2 wontfix
+- Commit unico convencional sin Co-Authored-By; no-touch del contrato (choke/TTL/base-only)
+- Residuales (bajos, no bloqueantes):
+  - T-S5 (cancel-branch/refine-failure/album-final/choke-negative tests) -> item 4, ya marcado wontfix aqui
+  - P-N1 (artefactos .grok/.planning/variables_extract) -> documentador al cierre del pool
+  - DeprecationWarning asyncio en pytest 3.14 (ruido existente, no nuevo)
+  - engram mem_save NO disponible (sin tools MCP mem_*); descubrimiento del boton-noop documentado aqui
+
+### 2026-08-19 FIX ROUND 2 (review bbd31049)
+- Hallazgos R2-1..R2-5 resueltos (review file: Status open -> fixed).
+- R2-2 codigo: single-path refined-send failure ahora surfacea error en status_msg,
+  restaura base a regen keyboard y devuelve False (truthful). bot.py:3829-3844.
+- R2-4 codigo: album refined-send failure ahora borra el confirm_msg "Refinando…"
+  colgante antes de reportar el fallo. bot.py:3808-3819.
+- R2-1 test: cancel durante refine -> imagen refinada NO se envia, base conservada/regen.
+- R2-3 test: refined-send None -> error surfaced, base regen, return False.
+- R2-5 test: estado "Refinando…" (kb base + status_msg) antes del await del refino.
+- R2-4 test: album refined-send failure limpia confirm_msg.
+
+### 2026-08-19T VERIFICACION
+- harness: 29 passed (tests/test_comfyui_refine.py -q; base 26 + 3 nuevos).
+- regresion: 428 passed, 2 skipped (baseline 425 + 2).
+
+### 2026-08-19T COMMIT work-unit
+- fix(comfyui): surface refined-send failure + pin post-refine cancel test (sin Co-Authored-By).
+- hash: f6f7f63
+
+### 2026-08-19T SELF-CHECK PASSED
+- Harness 29/29 verde; regresion 428/428 + 2 skipped verde; R2-1..R2-5 fixed en review.
+- Commit unico convencional sin Co-Authored-By; no-touch del contrato (choke/TTL/base-only/B1/B2).
+- Gotchas respetados: reply_markup re-aplicado (regen/refining), safe_edit_text no alterado.
+- Residuales (bajos, no bloqueantes): T-S5 (item 4), P-N1 (documentador al cierre del pool),
+  DeprecationWarning asyncio pytest 3.14 (ruido existente), engram mem_* no disponible.
