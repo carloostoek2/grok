@@ -259,8 +259,10 @@ async def test_post_body_i2v_uses_persisted_model_and_payload(no_sleep, sessions
 @pytest.mark.asyncio
 async def test_generate_video_unsupported_provider():
     model = {"key": "other", "provider": "replicate", "id": "x"}
-    url, err = await bot.generate_video(model, "prompt")
+    url, err, elapsed = await bot.generate_video(model, "prompt")
     assert url is None
+    assert err is not None
+    assert elapsed is None
     assert "no soportado" in err.lower()
 
 

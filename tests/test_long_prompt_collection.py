@@ -384,22 +384,34 @@ async def test_model_switch_clears_long_prompt_state(sessions_file):
     assert user_state["model"] == "seedream"
 
 
-def test_format_result_caption_truncates_long_prompt():
-    long_prompt = "y" * 3000
-    caption = bot._format_result_caption("Prompt", long_prompt)
-    assert len(caption) <= bot.TELEGRAM_MAX_CAPTION_LEN
-    assert caption.endswith("…")
-    assert "<b>Prompt:</b>" in caption
+def test_format_elapsed():
+    assert bot._format_elapsed(0) == "0s"
+    assert bot._format_elapsed(45) == "45s"
+    assert bot._format_elapsed(125) == "2m 05s"
+    assert bot._format_elapsed(3600) == "60m 00s"
+    assert bot._format_elapsed(None) == "…"
 
 
-def test_format_result_caption_html_entities():
-    # Each & expands to &amp; — truncation must not split entities
-    prompt = "&" * 400
-    caption = bot._format_result_caption("Edit", prompt)
-    assert len(caption) <= bot.TELEGRAM_MAX_CAPTION_LEN
-    assert "&amp;" in caption
-    assert "&am" not in caption.replace("&amp;", "")
-    assert caption.endswith("…")
+def test_format_result_caption_shows_elapsed_not_prompt():
+    caption = bot._format_result_caption("Prompt", 45)
+    assert caption == "<b>Prompt:</b> 45s"
+    assert "…" not in caption
+
+
+def test_format_result_caption_model_shows_elapsed_not_prompt():
+    model = {"provider": "xai", "name": "Grok Imagine"}
+    caption = bot._format_result_caption("Prompt", 125, model=model)
+    assert "<b>Modelo:</b> Grok Imagine" in caption
+    assert "<b>Tiempo:</b> 2m 05s" in caption
+    assert "<b>Prompt:</b>" not in caption
+
+
+def test_format_result_caption_html_escapes_model_name():
+    model = {"provider": "xai", "name": "<b>&</b>"}
+    caption = bot._format_result_caption("Edit", 10, model=model)
+    assert "&lt;b&gt;&amp;&lt;/b&gt;" in caption
+    assert "<b>Modelo:</b>" in caption
+    assert "<b>&</b>" not in caption
 
 
 @pytest.mark.asyncio

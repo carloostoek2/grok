@@ -337,77 +337,46 @@ COMFYUI_CAPTION_LORA_LABELS = {
 }
 
 
-def _truncate_prompt_short(prompt: str, max_lines: int = 3, max_chars: int = 150) -> str:
-    """Primeras 2-3 líneas del prompt (máx ~150 chars), con … si se corta."""
-    lines = [ln.strip() for ln in prompt.splitlines() if ln.strip()]
-    if not lines:
+def _format_elapsed(sec: int | float | None) -> str:
+    """Tiempo de ejecución legible: '45s', '3m 05s'. '…' cuando no se midió."""
+    if sec is None:
         return "…"
-    parts, used = [], 0
-    for ln in lines:
-        if used >= max_chars or len(parts) >= max_lines:
-            break
-        piece = ln[: max_chars - used]
-        parts.append(piece)
-        used += len(piece)
-    text = " ".join(parts).strip()
-    if len(text) < len(" ".join(lines)):
-        text = text.rstrip() + "…"
-    return _escape_prompt(text)
+    sec = int(sec)
+    if sec < 60:
+        return f"{sec}s"
+    m, s = divmod(sec, 60)
+    return f"{m}m {s:02d}s"
 
 
-def _format_model_caption(model: dict, prompt: str) -> str:
-    """Caption con Modelo / LoRA (ComfyUI) / Prompt truncado a 2-3 líneas."""
+def _format_model_caption(model: dict, elapsed_sec: int | None) -> str:
+    """Caption con Modelo / LoRA (ComfyUI) / tiempo de ejecución."""
     cm = model.get("comfyui_model")
     if cm:
         mlabel = COMFYUI_CAPTION_MODEL_LABELS.get(cm, cm) or "?"
         cl = model.get("comfyui_lora")
         llabel = COMFYUI_CAPTION_LORA_LABELS.get(cl, cl) or "Sin LoRA"
-        body = (
+        return (
             f"<b>Modelo:</b> {_escape_prompt(mlabel)}\n"
             f"<b>LoRA:</b> {_escape_prompt(llabel)}\n"
-            f"<b>Prompt:</b> "
+            f"<b>Tiempo:</b> {_format_elapsed(elapsed_sec)}"
         )
-    else:
-        mlabel = model.get("name", "?")
-        body = f"<b>Modelo:</b> {_escape_prompt(mlabel)}\n<b>Prompt:</b> "
-    return body + _truncate_prompt_short(prompt)
+    mlabel = model.get("name", "?")
+    return (
+        f"<b>Modelo:</b> {_escape_prompt(mlabel)}\n"
+        f"<b>Tiempo:</b> {_format_elapsed(elapsed_sec)}"
+    )
 
 
 def _format_result_caption(
     prefix: str,
-    prompt: str,
+    elapsed_sec: int | None,
     variant: str | None = None,
     model: dict | None = None,
 ) -> str:
     if model is not None:
-        return _format_model_caption(model, prompt)
+        return _format_model_caption(model, elapsed_sec)
     header = f"<b>{prefix} ({variant}):</b> " if variant else f"<b>{prefix}:</b> "
-    ellipsis = "…"
-    max_len = TELEGRAM_MAX_CAPTION_LEN
-    if len(header) >= max_len:
-        return header[:max_len]
-
-    budget = max_len - len(header)
-    escaped_full = _escape_prompt(prompt)
-    if len(escaped_full) <= budget:
-        return f"{header}{escaped_full}"
-
-    if budget <= len(ellipsis):
-        return f"{header}{ellipsis[:budget]}"
-
-    content_budget = budget - len(ellipsis)
-    lo, hi = 0, len(prompt)
-    best = 0
-    while lo <= hi:
-        mid = (lo + hi) // 2
-        if len(_escape_prompt(prompt[:mid])) <= content_budget:
-            best = mid
-            lo = mid + 1
-        else:
-            hi = mid - 1
-
-    truncated = _escape_prompt(prompt[:best]) + ellipsis
-    return f"{header}{truncated}"
+    return f"{header}{_format_elapsed(elapsed_sec)}"
 
 
 def _parse_integrate_caption(caption: str) -> tuple[bool, str]:
@@ -1653,7 +1622,7 @@ async def _do_generate_video(
                 status_text = _video_start_message(video_model, prompt)
             status_msg = await reply_msg.answer(status_text, parse_mode="HTML")
 
-        output, err = await generate_video(
+        output, err, elapsed_sec = await generate_video(
             model,
             prompt,
             image_data,
@@ -1665,6 +1634,8 @@ async def _do_generate_video(
             await status_msg.edit_text(err)
             return False
         prefix = "Edit" if image_data or kie_source_ref else "Prompt"
+        video_cfg_model = sessions.get_video_config(uid)["model"]
+        video_label = VIDEO_MODEL_LABELS.get(video_cfg_model, video_cfg_model)
         await process_video_result(
             output,
             prompt,
@@ -1672,6 +1643,8 @@ async def _do_generate_video(
             reply_msg,
             prefix,
             download_allowlist=_download_allowlist_for_provider(model.get("provider")),
+            elapsed_sec=elapsed_sec,
+            model={"name": video_label},
         )
         return True
     except Exception as e:
@@ -3239,6 +3212,7 @@ async def generate_image(
         f"has_image={image_data is not None} has_ref={reference_image is not None} "
         f"kie_ref={kie_source_ref is not None}"
     )
+    started = time.monotonic()
     last_err: str | None = None
     for attempt in range(GENERATE_MAX_RETRIES + 1):
         if attempt > 0:
@@ -3256,6 +3230,10 @@ async def generate_image(
         except Exception as exc:
             output, err, meta = None, f"Error de {_prov_label(prov)}: {exc}", None
         if err is None:
+            elapsed = int(time.monotonic() - started)
+            if meta is None:
+                meta = {}
+            meta["elapsed_sec"] = elapsed
             return output, None, meta
         if meta and meta.get("retryable") is False:
             return None, err, meta
@@ -3535,6 +3513,7 @@ async def _send_comfyui_image(
     *,
     reply_markup: InlineKeyboardMarkup | None = None,
     save_ref: bool = True,
+    elapsed_sec: int | None = None,
 ) -> types.Message | None:
     """Send a ComfyUI local-file result to Telegram directly (bypasses the
     URL-download machinery in process_image_result, which chokes on local paths).
@@ -3550,7 +3529,7 @@ async def _send_comfyui_image(
     kb = _image_regenerate_keyboard() if reply_markup is None else reply_markup
     sent_msg = await message.answer_photo(
         photo,
-        caption=_format_result_caption(prefix, prompt, model=model),
+        caption=_format_result_caption(prefix, elapsed_sec, model=model),
         parse_mode="HTML",
         reply_markup=kb,
         reply_to_message_id=message.message_id,
@@ -3584,6 +3563,8 @@ async def _send_comfyui_video(
     regen_context: dict,
     model: dict | None = None,
     delete_status: bool = True,
+    *,
+    elapsed_sec: int | None = None,
 ) -> bool:
     """Send a ComfyUI Wan/MiniMax MP4 result to Telegram as a video."""
     try:
@@ -3594,7 +3575,7 @@ async def _send_comfyui_video(
         return False
     sent_msg = await message.answer_video(
         video,
-        caption=_format_result_caption(prefix, prompt, model=model),
+        caption=_format_result_caption(prefix, elapsed_sec, model=model),
         parse_mode="HTML",
         reply_markup=_image_regenerate_keyboard(),
     )
@@ -3628,10 +3609,11 @@ async def _send_comfyui_output(
     output puede ser una LISTA (batch multi-ángulo = 5 imágenes → álbum).
     A refinable generation (comfyui_refine==1 y meta trae comfyui_remotes)
     entra al flujo en 2 etapas con confirmación interactiva."""
+    elapsed_sec = (meta or {}).get("elapsed_sec")
     if _comfyui_is_video(model):
         return await _send_comfyui_video(
             output, prompt, status_msg, message, prefix, regen_context, model=model,
-            delete_status=delete_status,
+            delete_status=delete_status, elapsed_sec=elapsed_sec,
         )
     if (
         model.get("comfyui_refine") == "1"
@@ -3649,17 +3631,17 @@ async def _send_comfyui_output(
             return bool(
                 await _send_comfyui_album(
                     output, prompt, status_msg, message, prefix, regen_context, model=model,
-                    delete_status=delete_status,
+                    delete_status=delete_status, elapsed_sec=elapsed_sec,
                 )
             )
     return (await _send_comfyui_image(
         output, prompt, status_msg, message, prefix, regen_context, model=model,
-        delete_status=delete_status,
+        delete_status=delete_status, elapsed_sec=elapsed_sec,
     )) is not None
 
 
 def _build_comfyui_album_media(
-    outputs: list, prefix: str, prompt: str, model: dict | None,
+    outputs: list, prefix: str, elapsed_sec: int | None, model: dict | None,
 ) -> list[types.InputMediaPhoto]:
     media: list = []
     for i, p in enumerate(outputs[:10]):
@@ -3668,7 +3650,7 @@ def _build_comfyui_album_media(
                 data = f.read()
         except (OSError, TypeError):
             continue
-        cap = _format_result_caption(prefix, prompt, model=model) if i == 0 else None
+        cap = _format_result_caption(prefix, elapsed_sec, model=model) if i == 0 else None
         media.append(
             types.InputMediaPhoto(
                 media=BufferedInputFile(data, filename=f"comfyui_{i}.png"),
@@ -3690,10 +3672,11 @@ async def _send_comfyui_album(
     model: dict | None = None,
     delete_status: bool = True,
     save_ref: bool = True,
+    elapsed_sec: int | None = None,
 ) -> list[types.Message] | None:
     """Envía varias imágenes como álbum de Telegram (máx 10). Devuelve los mensajes
     (None si no se pudo leer ninguna)."""
-    media = _build_comfyui_album_media(outputs, prefix, prompt, model)
+    media = _build_comfyui_album_media(outputs, prefix, elapsed_sec, model)
     if not media:
         await status_msg.edit_text("No se pudieron leer las imágenes generadas.")
         return None
@@ -3741,6 +3724,7 @@ async def _send_comfyui_confirm_refine(
         message_id=message.message_id, job_id=job_id,
     )
     kb = _refine_confirm_keyboard(token)
+    base_elapsed = (meta or {}).get("elapsed_sec")
 
     base_msg = None
     confirm_msg = None
@@ -3748,6 +3732,7 @@ async def _send_comfyui_confirm_refine(
         base_album = await _send_comfyui_album(
             output, prompt, status_msg, message, prefix, regen_context,
             model=model, delete_status=False, save_ref=True,
+            elapsed_sec=base_elapsed,
         )
         if base_album is None:
             # No base to confirm on — don't post a confirm prompt for images the
@@ -3763,6 +3748,7 @@ async def _send_comfyui_confirm_refine(
         base_msg = await _send_comfyui_image(
             single, prompt, status_msg, message, prefix, regen_context,
             model=model, delete_status=False, save_ref=True, reply_markup=kb,
+            elapsed_sec=base_elapsed,
         )
         if base_msg is None:
             _drop_pending_refine(token)
@@ -3806,9 +3792,11 @@ async def _send_comfyui_confirm_refine(
             except Exception:
                 pass
 
+        refine_started = time.monotonic()
         refined, rerr = await _generate_comfyui_refine(
             model, prompt, list(meta.get("comfyui_remotes", [])),
         )
+        refine_elapsed = int(time.monotonic() - refine_started) if rerr is None else None
 
         if _job_cancelled(cancel_event):
             # Cancel during the refine step: do not deliver the refined image.
@@ -3844,6 +3832,7 @@ async def _send_comfyui_confirm_refine(
             refined_album = await _send_comfyui_album(
                 refined, prompt, status_msg, message, prefix, regen_context,
                 model=model, delete_status=delete_status,
+                elapsed_sec=refine_elapsed,
             )
             if refined_album is None:
                 # Refined send failed: clean up the dangling confirm message,
@@ -3867,6 +3856,7 @@ async def _send_comfyui_confirm_refine(
             ok = await _send_comfyui_image(
                 single_refined, prompt, status_msg, message, prefix, regen_context,
                 model=model, delete_status=delete_status,
+                elapsed_sec=refine_elapsed,
             )
             if ok is None:
                 # Refined send failed: surface the error, restore the base to
@@ -4395,6 +4385,7 @@ async def process_image_result(
         if kie_meta and kie_meta.get("task_id")
         else (regen_context or {}).get("provider", "unknown")
     )
+    elapsed_sec = (kie_meta or {}).get("elapsed_sec")
 
     if len(urls) == 1:
         image_bytes, dl_err = await download_url(urls[0], download_allowlist=download_allowlist)
@@ -4404,7 +4395,7 @@ async def process_image_result(
         photo = BufferedInputFile(image_bytes, filename="generated.png")
         sent_msg = await message.answer_photo(
             photo,
-            caption=_format_result_caption(prefix, prompt, model=model),
+            caption=_format_result_caption(prefix, elapsed_sec, model=model),
             parse_mode="HTML",
             reply_markup=_image_regenerate_keyboard(),
             reply_to_message_id=message.message_id,
@@ -4433,7 +4424,7 @@ async def process_image_result(
         photo = BufferedInputFile(image_bytes, filename="generated.png")
         sent_msg = await message.answer_photo(
             photo,
-            caption=_format_result_caption(prefix, prompt, variant=f"{i + 1}/{total}", model=model),
+            caption=_format_result_caption(prefix, elapsed_sec, variant=f"{i + 1}/{total}", model=model),
             parse_mode="HTML",
             reply_markup=_image_regenerate_keyboard(),
             reply_to_message_id=message.message_id,
@@ -4517,7 +4508,7 @@ async def generate_video(
     kie_source_ref: dict | None = None,
     status_msg: types.Message | None = None,
     user_id: int | None = None,
-) -> tuple[str | None, str | None]:
+) -> tuple[str | None, str | None, int | None]:
     prov = model.get("provider", "?")
     if user_id is not None:
         model_id = sessions.get_video_config(user_id)["model"]
@@ -4527,16 +4518,17 @@ async def generate_video(
         f"[generate_video] key={model.get('key')} provider={prov} id={model_id} "
         f"has_image={image_data is not None} kie_ref={kie_source_ref is not None}"
     )
+    started = time.monotonic()
     if prov == "xai":
-        return await _generate_xai_video(
+        url, err = await _generate_xai_video(
             model,
             prompt,
             image_data,
             status_msg=status_msg,
             user_id=user_id,
         )
-    if prov == "kie":
-        return await _generate_kie_video(
+    elif prov == "kie":
+        url, err = await _generate_kie_video(
             model,
             prompt,
             image_data,
@@ -4544,7 +4536,10 @@ async def generate_video(
             status_msg=status_msg,
             user_id=user_id,
         )
-    return None, "Proveedor no soportado para generación de video."
+    else:
+        return None, "Proveedor no soportado para generación de video.", None
+    elapsed = int(time.monotonic() - started) if err is None else None
+    return url, err, elapsed
 
 
 async def _generate_xai_video(
@@ -4765,6 +4760,8 @@ async def process_video_result(
     *,
     enforce_host_allowlist: bool = True,
     download_allowlist: str | None = None,
+    elapsed_sec: int | None = None,
+    model: dict | None = None,
 ):
     if not video_url:
         await status_msg.edit_text("Error: el modelo no devolvió URL de video. Intenta con otro prompt.")
@@ -4794,7 +4791,7 @@ async def process_video_result(
     try:
         await message.answer_video(
             video,
-            caption=_format_result_caption(prefix, prompt),
+            caption=_format_result_caption(prefix, elapsed_sec, model=model),
             parse_mode="HTML",
         )
         await status_msg.delete()

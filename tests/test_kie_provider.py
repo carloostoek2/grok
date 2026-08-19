@@ -165,10 +165,11 @@ async def test_generate_image_routes_to_kie(no_sleep):
 async def test_generate_video_routes_to_kie(no_sleep):
     model = {"key": "grok_video", "provider": "kie", "imagine_variant": "standard"}
     with patch.object(bot, "_generate_kie_video", new_callable=AsyncMock, return_value=(VIDEO_RESULT_URL, None)) as mock_kie:
-        url, err = await bot.generate_video(model, "waves on the beach")
+        url, err, elapsed = await bot.generate_video(model, "waves on the beach")
     mock_kie.assert_awaited_once()
     assert err is None
     assert url == VIDEO_RESULT_URL
+    assert elapsed is not None
 
 
 @pytest.mark.asyncio
@@ -592,7 +593,7 @@ async def test_do_generate_video_passes_kie_download_allowlist():
     status.edit_text = AsyncMock()
     model = {"key": "grok_video", "provider": "kie"}
 
-    with patch.object(bot, "generate_video", new_callable=AsyncMock, return_value=(VIDEO_RESULT_URL, None)):
+    with patch.object(bot, "generate_video", new_callable=AsyncMock, return_value=(VIDEO_RESULT_URL, None, 12)):
         with patch.object(bot, "process_video_result", new_callable=AsyncMock) as mock_proc:
             await bot._do_generate_video(
                 msg,

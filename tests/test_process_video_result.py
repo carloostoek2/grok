@@ -66,16 +66,21 @@ async def test_success_sends_video_and_deletes_status():
 
 
 @pytest.mark.asyncio
-async def test_success_truncates_long_caption():
+async def test_success_caption_shows_model_and_elapsed_not_prompt():
     status_msg, message = _make_messages()
     long_prompt = "z" * 3000
     with patch.object(bot, "download_url", new_callable=AsyncMock, return_value=(VIDEO_BYTES, None)):
-        await bot.process_video_result(VIDEO_URL, long_prompt, status_msg, message, "Prompt")
+        await bot.process_video_result(
+            VIDEO_URL, long_prompt, status_msg, message, "Prompt",
+            elapsed_sec=95, model={"name": "Base"},
+        )
 
     message.answer_video.assert_awaited_once()
     caption = message.answer_video.await_args.kwargs["caption"]
     assert len(caption) <= bot.TELEGRAM_MAX_CAPTION_LEN
-    assert caption.endswith("…")
+    assert "<b>Modelo:</b> Base" in caption
+    assert "<b>Tiempo:</b> 1m 35s" in caption
+    assert "zzz" not in caption
 
 
 @pytest.mark.asyncio
