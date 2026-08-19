@@ -37,5 +37,6 @@
       "Mirando a través de elementos del entorno (plantas, marcos de puertas, cortinas) que bloquean parcialmente el encuadre."
     ]
   },
-  "template": "Refactoriza el fondo y cambia el ángulo de la toma \n{pose} {angle} {action}"
+  "template": "Refactoriza el fondo y cambia el ángulo de la toma \n{pose} {angle} {action}",
+  "blacklist": []
 }

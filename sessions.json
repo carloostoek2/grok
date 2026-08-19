@@ -23,8 +23,8 @@
       1781842752.5656965,
       1781843079.275552
     ],
-    "comfyui_model": "krea2_moody",
-    "comfyui_lora": "krea_both"
+    "comfyui_model": "krea2",
+    "comfyui_lora": "krea_edit_nsfw"
   },
   "1280444712": {
     "source_path": "/home/ubuntu/repos/grok/sources/1280444712.jpg",
