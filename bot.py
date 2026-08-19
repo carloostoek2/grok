@@ -3806,7 +3806,13 @@ async def _send_comfyui_confirm_refine(
                 model=model, delete_status=delete_status,
             )
             if refined_album is None:
-                # Refined send failed: keep the base album and report the failure.
+                # Refined send failed: clean up the dangling confirm message,
+                # keep the base album, and report the failure.
+                if confirm_msg is not None:
+                    try:
+                        await confirm_msg.delete()
+                    except Exception:
+                        pass
                 await status_msg.edit_text(
                     "No se pudieron enviar las imágenes refinadas.", reply_markup=None
                 )
@@ -3823,6 +3829,21 @@ async def _send_comfyui_confirm_refine(
                 model=model, delete_status=delete_status,
             )
             if ok is None:
+                # Refined send failed: surface the error, restore the base to
+                # its final state, and report the failure truthfully.
+                if status_msg is not None:
+                    try:
+                        await status_msg.edit_text(
+                            "No se pudo enviar la imagen refinada.", reply_markup=None
+                        )
+                    except Exception:
+                        pass
+                try:
+                    await base_msg.edit_reply_markup(
+                        reply_markup=_image_regenerate_keyboard()
+                    )
+                except Exception:
+                    pass
                 return False
             try:
                 await base_msg.delete()
