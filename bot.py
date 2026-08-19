@@ -3362,6 +3362,29 @@ async def _generate_replicate(model: dict, prompt: str, image_data: BytesIO | No
 # ---------------------------------------------------------------------------
 # ComfyUI provider — generation on the user's Vast GPU box (SSH + native API)
 # ---------------------------------------------------------------------------
+def _comfyui_ssh_opts() -> list[str]:
+    """Opciones SSH compartidas (ssh y scp) con ControlMaster para reusar UNA
+    conexión entre los pasos upload/run/pull de una generación.
+
+    Cada ssh/scp fresco al box de Vast paga ~5s de handshake por la latencia
+    (~360ms) y la pérdida de paquetes del enlace. Con ControlMaster solo la
+    primera conexión paga ese costo y el resto la reusa; ControlPersist la
+    mantiene viva un rato para peticiones seguidas.
+    """
+    ctl = os.path.join(
+        _comfyui_tmpdir(), f"sshctl_{COMFYUI_HOST or 'box'}_{COMFYUI_PORT or 22}"
+    )
+    return [
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=25",
+        "-o", "ControlMaster=auto",
+        "-o", f"ControlPath={ctl}",
+        "-o", "ControlPersist=120",
+        "-o", "ServerAliveInterval=30",
+        "-o", "ServerAliveCountMax=4",
+    ]
+
+
 def _comfyui_ssh_base() -> tuple[str, int | None, str | None]:
     if not COMFYUI_HOST:
         return "", None, (
@@ -3372,8 +3395,9 @@ def _comfyui_ssh_base() -> tuple[str, int | None, str | None]:
         port = int(COMFYUI_PORT or 22)
     except ValueError:
         return "", None, "COMFYUI_PORT inválido en .env."
+    opts = " ".join(_comfyui_ssh_opts())
     return (
-        f"ssh -p {port} -o BatchMode=yes -o ConnectTimeout=25 root@{COMFYUI_HOST}",
+        f"ssh -p {port} {opts} root@{COMFYUI_HOST}",
         port,
         None,
     )
@@ -3425,8 +3449,8 @@ async def _comfyui_pull(remote_path: str) -> str:
     proc = await asyncio.to_thread(
         subprocess.run,
         [
-            "scp", "-P", str(port), "-o", "BatchMode=yes",
-            "-o", "ConnectTimeout=25", f"root@{COMFYUI_HOST}:{remote_path}", local,
+            "scp", "-P", str(port), *_comfyui_ssh_opts(),
+            f"root@{COMFYUI_HOST}:{remote_path}", local,
         ],
         capture_output=True,
         timeout=120,
