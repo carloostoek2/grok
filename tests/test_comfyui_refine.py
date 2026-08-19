@@ -10,6 +10,8 @@ pytest.ini sets asyncio_mode=auto, so async tests need no marker.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import subprocess
 from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -81,6 +83,32 @@ async def test_generate_comfyui_base_only_no_refine_env(tmp_path):
     cmd = run_remote.await_args.args[0]
     assert "REFINE=" not in cmd
     assert "MODEL='krea2'" in cmd
+
+
+async def test_generate_comfyui_img2img_sends_envelope_not_scp(tmp_path):
+    local = tmp_path / "out.png"
+    img = BytesIO(b"\x89PNG\r\n\x1a\nfake-image-bytes")
+    with patch.object(bot, "_comfyui_ssh_base", return_value=("ssh -p 22 root@box", 22, None)):
+        with patch.object(
+            bot,
+            "_comfyui_run_remote",
+            new_callable=AsyncMock,
+            return_value=(["/workspace/ComfyUI/output/edit_x.png"], 0),
+        ) as run_remote:
+            with patch.object(bot, "_comfyui_pull", new_callable=AsyncMock, return_value=str(local)):
+                locals_, err, meta = await bot._generate_comfyui(
+                    _comfyui_model(), "make it prettier", image_data=img
+                )
+
+    assert err is None
+    assert locals_ == [str(local)]
+    cmd = run_remote.await_args.args[0]
+    payload = run_remote.await_args.args[1]
+    assert "INPUT_IMAGE=" not in cmd
+    assert "MODEL='krea2'" in cmd
+    data = json.loads(payload)
+    assert data["prompt"] == "make it prettier"
+    assert data["image_b64"] == base64.b64encode(b"\x89PNG\r\n\x1a\nfake-image-bytes").decode("ascii")
 
 
 # --- _generate_comfyui_refine + path validation -----------------------------

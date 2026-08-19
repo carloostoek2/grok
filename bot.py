@@ -3460,30 +3460,6 @@ async def _comfyui_pull(remote_path: str) -> str:
     return local
 
 
-async def _comfyui_upload(image_data: BytesIO) -> str:
-    """Upload a Telegram photo to the box's ComfyUI input dir. Returns remote filename or ''."""
-    ssh_base, port, err = _comfyui_ssh_base()
-    if err or not ssh_base:
-        return ""
-    name = f"edit_{int(time.time())}_{uuid.uuid4().hex[:6]}.png"
-    local = os.path.join(_comfyui_tmpdir(), name)
-    with open(local, "wb") as f:
-        image_data.seek(0)
-        f.write(image_data.read())
-    proc = await asyncio.to_thread(
-        subprocess.run,
-        [
-            "scp", "-P", str(port), "-o", "BatchMode=yes",
-            "-o", "ConnectTimeout=25", local,
-            f"root@{COMFYUI_HOST}:/workspace/ComfyUI/input/{name}",
-        ],
-        capture_output=True,
-        timeout=120,
-    )
-    os.remove(local)
-    return name if proc.returncode == 0 else ""
-
-
 async def _generate_comfyui(
     model: dict,
     prompt: str,
@@ -3514,14 +3490,19 @@ async def _generate_comfyui(
             cmd = f"MODEL='{cm}' LORA='{cl}' python3 /workspace/gen_comfy.py"
             remotes, _rc = await _comfyui_run_remote(cmd, prompt)
         else:
-            name = await _comfyui_upload(image_data)
-            if not name:
-                return None, "No pude subir la imagen al box de ComfyUI.", None
-            cmd = (
-                f"MODEL='{cm}' LORA='{cl}' INPUT_IMAGE='{name}' "
-                f"python3 /workspace/gen_comfy.py"
+            # Single round-trip: en vez de un scp de subida aparte (una conexión
+            # SSH extra + transferencia), la imagen viaja en base64 por el stdin
+            # de la MISMA conexión ssh que ejecuta gen_comfy.py (protocolo JSON,
+            # retrocompatible en el box).
+            image_data.seek(0)
+            payload = json.dumps(
+                {
+                    "prompt": prompt,
+                    "image_b64": base64.b64encode(image_data.read()).decode("ascii"),
+                }
             )
-            remotes, _rc = await _comfyui_run_remote(cmd, prompt)
+            cmd = f"MODEL='{cm}' LORA='{cl}' python3 /workspace/gen_comfy.py"
+            remotes, _rc = await _comfyui_run_remote(cmd, payload)
         if not remotes:
             return None, (
                 "ComfyUI no devolvió imagen. Revisa el box: "
