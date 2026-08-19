@@ -51,6 +51,7 @@ def reset_runtime_state():
     yield
     bot.user_state.clear()
     bot._active_jobs.clear()
+    bot._pending_refine.clear()
     bot._CONFIG_DEPS.clear()
     bot._CONFIG_DEPS.update(deps_snapshot)
 
