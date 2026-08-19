@@ -45,7 +45,7 @@ When the configured ComfyUI model has refine enabled (default), each generated i
 - `✨ Refinar` re-refines the SAME base (same model/prompt; uses the box's `REFINE_ONLY` mode) and posts the refined image.
 - `⏭ Continuar` keeps the base as the final result (the base moves to the "Regenerar" keyboard).
 - If no decision arrives within the TTL (default **300 s**, env `REFINE_CONFIRM_TIMEOUT`), the base is final.
-- Cancelling during a refine (`Cancelar`) respects the chain in progress: in `/variables` (and album batch) the batch stops cleanly with "Cancelado. Completadas X/N" and the base is kept.
+- Cancelling during a refine (`Cancelar`) in `/variables` stops the batch cleanly with "Cancelado. Completadas X/N" and the base is kept. (The album-batch variant of this path is not reachable for ComfyUI — dead branch, see below.)
 
 ComfyUI multi-photo albums are NOT routed: `handle_album` does not process ComfyUI media groups (defensive/dead branch of the bot). The single-image confirm keyboard rides on the image itself.
 

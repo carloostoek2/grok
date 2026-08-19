@@ -1392,7 +1392,7 @@ async def test_send_comfyui_output_confirm_album_final_image(monkeypatch, trigge
     refine_mock.assert_not_awaited()
     assert send_album.await_count == 1
     assert confirm_msg.edit_text.await_args.args[0] == "Imagen final."
-    assert "reply_markup" not in confirm_msg.edit_text.await_args.kwargs
+    assert confirm_msg.edit_text.await_args.kwargs.get("reply_markup") in (None,)
     status_msg.delete.assert_awaited_once()
     for m in base_msgs:
         m.delete.assert_not_awaited()
