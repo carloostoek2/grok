@@ -6,3 +6,6 @@ __pycache__/
 .vscode/
 .env.bak*
 tmp/
+sessions.json
+generation_refs.json
+variables_lists.json
