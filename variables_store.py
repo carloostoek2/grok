@@ -64,6 +64,12 @@ _FIELD_INDEX = {"pose": 0, "angle": 1, "action": 2}
 # Matches named template placeholders like {pose}, {angle}, {action}.
 _PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 
+# Matches str.format expressions (attribute/index/conversion/format-spec) such as
+# {pose.foo}, {pose!r}, {pose:>10}. These are invalid as plain placeholders and
+# make the template fall back to a join (JSON object braces never match, since a
+# JSON key follows `{` with whitespace and a quote, not an identifier).
+_FORMAT_EXPR_RE = re.compile(r"\{[a-zA-Z_][a-zA-Z0-9_]*(?:[.!:])")
+
 
 def _load() -> dict:
     if VARIABLES_FILE.exists():
@@ -217,14 +223,25 @@ def delete_item(name: str, index: int) -> bool:
     return True
 
 
+def _needs_fallback(template: str, values: dict[str, str]) -> bool:
+    """True when the template cannot be rendered with the supplied values."""
+    if _FORMAT_EXPR_RE.search(template):
+        return True
+    return any(f not in values for f in _PLACEHOLDER_RE.findall(template))
+
+
 def build_prompt(pose: str, angle: str, action: str) -> str:
-    """Fill the configured template with the three selected items."""
+    """Fill the configured template with the three selected items.
+
+    Placeholders are replaced by regex instead of ``str.format``, so templates
+    that contain literal braces — e.g. a JSON-structured prompt — render intact.
+    """
     template = get_template()
-    try:
-        return template.format(pose=pose, angle=angle, action=action)
-    except (KeyError, IndexError, ValueError, AttributeError, TypeError):
+    values = {"pose": pose, "angle": angle, "action": action}
+    if _needs_fallback(template, values):
         # Fall back to a plain join when the template references unknown fields.
         return f"{pose}, {angle}, {action}"
+    return _PLACEHOLDER_RE.sub(lambda m: values[m.group(1)], template)
 
 
 def template_fields(template: str | None = None) -> list[str]:
@@ -246,11 +263,10 @@ def combo_key(pose: str, angle: str, action: str) -> tuple:
 
 def _render_positional(template: str, values: list[str]) -> str:
     """Render the template with `values` filling its placeholders left to right."""
-    positional = _PLACEHOLDER_RE.sub("{}", template)
-    try:
-        return positional.format(*values)
-    except (IndexError, ValueError, AttributeError):
+    if _FORMAT_EXPR_RE.search(template):
         return ", ".join(values)
+    it = iter(values)
+    return _PLACEHOLDER_RE.sub(lambda _m: next(it, ""), template)
 
 
 def build_prompt_shuffled(pose: str, angle: str, action: str) -> str:

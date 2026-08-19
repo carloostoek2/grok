@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import variables_store
@@ -101,6 +102,50 @@ def test_build_prompt_fallback_on_attribute_error(variables_file):
     variables_store.set_template("{pose.foo}")
     prompt = variables_store.build_prompt("a", "b", "c")
     assert prompt == "a, b, c"
+
+
+JSON_TEMPLATE = (
+    '{\n'
+    '  "subject": "2B",\n'
+    '  "pose": "{pose}",\n'
+    '  "camera": {"angle": "{angle}"},\n'
+    '  "note": "keep braces literal {}"\n'
+    '}'
+)
+
+
+def test_build_prompt_renders_json_template(variables_file):
+    variables_store.set_template(JSON_TEMPLATE)
+    prompt = variables_store.build_prompt("de pie", "frontal", "mirando")
+    assert '"pose": "de pie"' in prompt
+    assert '"camera": {"angle": "frontal"}' in prompt
+    # Literal JSON braces survive the render (str.format used to choke on them).
+    assert prompt.startswith("{")
+    assert prompt.endswith("}")
+    assert '"keep braces literal {}"' in prompt
+    data = json.loads(prompt)
+    assert data["pose"] == "de pie"
+    assert data["camera"]["angle"] == "frontal"
+
+
+def test_build_prompt_shuffled_renders_json_template(variables_file):
+    variables_store.set_template(JSON_TEMPLATE)
+    with patch("variables_store.random.shuffle", side_effect=lambda x: x.reverse()):
+        prompt = variables_store.build_prompt_shuffled("A", "B", "ignored")
+    data = json.loads(prompt)
+    assert data["pose"] == "B"
+    assert data["camera"]["angle"] == "A"
+
+
+def test_template_fields_ignores_json_braces(variables_file):
+    variables_store.set_template(JSON_TEMPLATE)
+    assert variables_store.template_fields() == ["pose", "angle"]
+
+
+def test_build_prompt_json_template_single_field(variables_file):
+    variables_store.set_template('{"subject": "2B", "pose": "{pose}"}')
+    prompt = variables_store.build_prompt("de pie", "frontal", "mirando")
+    assert json.loads(prompt)["pose"] == "de pie"
 
 
 def test_random_combination_uses_lists_and_template(variables_file):
