@@ -168,6 +168,12 @@ TELEGRAM_MAX_VIDEO_BYTES = 50 * 1024 * 1024
 POLL_MAX_RETRIES = 3
 POLL_RETRY_BACKOFF_SEC = (2, 4, 8)
 GENERATE_MAX_RETRIES = 5
+# --- Item 2 (comfyui refine confirm): confirmación interactiva de refino ---
+REFINE_CONFIRM_TIMEOUT = int(os.environ.get("REFINE_CONFIRM_TIMEOUT", "300"))  # segundos
+REFINE_REFINE_TIMEOUT_PER_BASE = 1200  # el box usa _run_graph(timeout=1200) POR base (gen_comfy.py:173)
+_REFINE_CANCELLED = object()  # sentinel: future resuelto por cancelación
+_pending_refine: dict[str, dict] = {}  # token -> {future, user_id, message_id, job_id}
+_REFINE_REMOTE_PATH_RE = re.compile(r"^/workspace/[A-Za-z0-9_./-]{1,300}$")
 # xAI serves generated assets from *.x.ai / *.xai.com only (no broad CDN suffixes).
 ALLOWED_DOWNLOAD_HOST_SUFFIXES = (".x.ai", ".xai.com")
 # Kie.ai result and upload CDN hosts (exact + subdomain suffixes from API probes).
@@ -491,6 +497,14 @@ def _finish_job(user_id: int, event: asyncio.Event | None) -> None:
         _active_jobs[user_id] = remaining
     else:
         _active_jobs.pop(user_id, None)
+    # Item 2: limpiar confirmaciones de refino huérfanas de este user+job.
+    job_id = getattr(event, "job_id", None)
+    for token in list(_pending_refine):
+        entry = _pending_refine[token]
+        if entry["user_id"] == user_id and (job_id is None or entry["job_id"] == job_id):
+            if not entry["future"].done():
+                entry["future"].set_result(False)
+            _pending_refine.pop(token, None)
 
 
 def _clear_pending_faceswap(state: dict) -> None:
@@ -671,6 +685,41 @@ def _image_regenerate_keyboard(*, show_cancel: bool = False) -> InlineKeyboardMa
     if show_cancel:
         row.append(InlineKeyboardButton(text="Cancelar", callback_data="cancel_job"))
     return InlineKeyboardMarkup(inline_keyboard=[row])
+
+
+def _refine_confirm_keyboard(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✨ Refinar", callback_data=f"refine:{token}:yes"),
+                InlineKeyboardButton(text="⏭ Continuar", callback_data=f"refine:{token}:no"),
+            ],
+        ]
+    )
+
+
+def _register_pending_refine(
+    token: str, *, user_id: int, message_id: int, job_id: str | None
+) -> asyncio.Future:
+    future = asyncio.get_running_loop().create_future()
+    _pending_refine[token] = {
+        "future": future,
+        "user_id": user_id,
+        "message_id": message_id,
+        "job_id": job_id,
+    }
+    return future
+
+
+def _drop_pending_refine(token: str) -> None:
+    _pending_refine.pop(token, None)
+
+
+def _cancel_pending_refines_for_user(user_id: int) -> None:
+    for token in list(_pending_refine):
+        entry = _pending_refine[token]
+        if entry["user_id"] == user_id and not entry["future"].done():
+            entry["future"].set_result(_REFINE_CANCELLED)
 
 
 def _grok_model_for_config(user_id: int, provider: str, variant: str) -> dict:
@@ -1101,6 +1150,7 @@ async def handle_cancel_job(callback: types.CallbackQuery):
     data = callback.data or ""
     job_id = data.split(":", 1)[1] if data.startswith("cancel_job:") else None
     if _request_cancel_job(callback.from_user.id, job_id=job_id):
+        _cancel_pending_refines_for_user(callback.from_user.id)
         await callback.answer("Cancelando…")
         # Running loop will update final status; soft-signal on the message.
         if callback.message is not None:
@@ -1185,6 +1235,30 @@ async def handle_confirm_generation(callback: types.CallbackQuery):
     )
     await callback.answer()
     await _do_generate_text(callback.message, model, prompt, user_id=callback.from_user.id)
+
+
+@dp.callback_query(lambda c: bool(c.data) and c.data.startswith("refine:"))
+async def handle_refine_decision(callback: types.CallbackQuery):
+    """Resuelve la decisión de refino (refine:<token>:yes|no). Re-tap de un token
+    ya resuelto/borrado = no-op idempotente (answer informativo)."""
+    parts = (callback.data or "").split(":")
+    if len(parts) != 3:
+        await callback.answer("Acción inválida.")
+        return
+    token, choice = parts[1], parts[2]
+    entry = _pending_refine.get(token)
+    if entry is None or entry["future"].done():
+        await callback.answer("La confirmación ya se procesó.", show_alert=True)
+        return
+    if entry["user_id"] != callback.from_user.id:
+        await callback.answer("No es tu confirmación.", show_alert=True)
+        return
+    if choice == "yes":
+        entry["future"].set_result(True)
+        await callback.answer("Refinando…")
+    else:
+        entry["future"].set_result(False)
+        await callback.answer("Listo, imagen final.")
 
 
 @dp.callback_query(lambda c: c.data == "regen")
@@ -1649,6 +1723,8 @@ async def _process_single_photo_edit(
                     source_file_id=file_id,
                     integrate_mode=integrate_mode,
                 ),
+                meta=kie_meta,
+                cancel_event=cancel_event,
             )
         await process_image_result(
             output,
@@ -3150,8 +3226,8 @@ async def _generate_once(
             kie_source_ref=kie_source_ref,
         )
     if prov == "comfyui":
-        path, err = await _generate_comfyui(model, prompt, image_data)
-        return path, err, None
+        locals_, err, meta = await _generate_comfyui(model, prompt, image_data)
+        return locals_, err, meta
     output, err = await _generate_replicate(model, prompt, image_data)
     return output, err, None
 
@@ -3202,13 +3278,17 @@ async def _comfyui_run_remote(cmd: str, prompt: str, *, timeout: int = 600) -> l
     ssh_base, _port, err = _comfyui_ssh_base()
     if err or not ssh_base:
         return []
-    proc = await asyncio.to_thread(
-        subprocess.run,
-        ssh_base.split() + [cmd],
-        input=prompt.encode(),
-        capture_output=True,
-        timeout=timeout,
-    )
+    try:
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            ssh_base.split() + [cmd],
+            input=prompt.encode(),
+            capture_output=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"[comfyui] run remoto excedió el timeout de {timeout}s")
+        return []
     if proc.returncode != 0:
         return []
     out = (proc.stdout or b"").decode(errors="replace").strip()
@@ -3277,44 +3357,94 @@ async def _generate_comfyui(
     image_data: BytesIO | None = None,
     *,
     status_msg: types.Message | None = None,
-) -> tuple[list[str] | None, str | None]:
+) -> tuple[list[str] | None, str | None, dict | None]:
     """Generate (txt2img) or edit (img2img) via ComfyUI on the Vast box.
 
-    Returns (lista de local_paths, err). El caller envía los archivos a Telegram
-    (batch multi-ángulo = 5 imágenes)."""
+    Item 2: genera SOLO la base (sin cascada de refino). Los paths remotos se
+    devuelven en meta["comfyui_remotes"] para que el flujo de confirmación
+    (_send_comfyui_confirm_refine) pueda refinarlos en una segunda pasada.
+    Returns (lista de local_paths, err, meta)."""
     _ssh_base, port, err = _comfyui_ssh_base()
     if err:
-        return None, err
+        return None, err, None
     cm = model.get("comfyui_model", "krea2")
     cl = model.get("comfyui_lora", "none")
-    cr = model.get("comfyui_refine", "1")
-    refine_env = f"REFINE='{cr}' " if cr == "1" and cm != "wan_i2v" else ""
     try:
         if image_data is None:
             if cm == "wan_i2v":
                 return None, (
                     "El generador de video necesita una foto de entrada:\n"
                     "envía una foto con el prompt, o responde a una foto con el texto."
-                )
+                ), None
             if cm in ("krea2", "krea2_raw", "krea2_moody") and cl.startswith("krea_edit"):
                 return None, (
                     "La edición de identidad necesita una foto de entrada:\n"
                     "envía la foto de la persona + el prompt de edición (o responde a una foto)."
-                )
-            cmd = f"MODEL='{cm}' LORA='{cl}' {refine_env}python3 /workspace/gen_comfy.py"
+                ), None
+            cmd = f"MODEL='{cm}' LORA='{cl}' python3 /workspace/gen_comfy.py"
             remotes = await _comfyui_run_remote(cmd, prompt)
         else:
             name = await _comfyui_upload(image_data)
             if not name:
-                return None, "No pude subir la imagen al box de ComfyUI."
+                return None, "No pude subir la imagen al box de ComfyUI.", None
             cmd = (
-                f"MODEL='{cm}' LORA='{cl}' INPUT_IMAGE='{name}' {refine_env}"
+                f"MODEL='{cm}' LORA='{cl}' INPUT_IMAGE='{name}' "
                 f"python3 /workspace/gen_comfy.py"
             )
             remotes = await _comfyui_run_remote(cmd, prompt)
         if not remotes:
             return None, (
                 "ComfyUI no devolvió imagen. Revisa el box: "
+                f"ssh -p {port} root@{COMFYUI_HOST} 'supervisorctl status comfyui'"
+            ), None
+        locals_ = []
+        for rp in remotes:
+            local = await _comfyui_pull(rp)
+            if local:
+                locals_.append(local)
+        if not locals_:
+            return None, "No pude descargar la imagen del box.", None
+        return locals_, None, {"comfyui_remotes": remotes}
+    except Exception as e:
+        return None, f"Error de ComfyUI: {e}", None
+
+
+def _validate_refine_remote_path(p: str) -> bool:
+    """Los paths vienen del stdout del box; validar charset para poder embeberlos
+    en el shell con seguridad (sin comillas simples ni meta-char)."""
+    return bool(p) and len(p) <= 300 and _REFINE_REMOTE_PATH_RE.fullmatch(p) is not None
+
+
+async def _generate_comfyui_refine(
+    model: dict,
+    prompt: str,
+    remote_paths: list[str],
+    *,
+    status_msg: types.Message | None = None,
+) -> tuple[list[str] | None, str | None]:
+    """Refina bases YA generadas en el box (REFINE_ONLY=1). Timeout escalado:
+    el box usa 1200s POR base (_run_graph), N bases → 1200*N + margen.
+    Returns (lista de local_paths refinados, err)."""
+    try:
+        _ssh_base, port, err = _comfyui_ssh_base()
+        if err:
+            return None, err
+        if not remote_paths:
+            return None, "No hay imágenes base para refinar."
+        invalid = [p for p in remote_paths if not _validate_refine_remote_path(p)]
+        if invalid:
+            return None, "Paths de refino inválidos."
+        cm = model.get("comfyui_model", "krea2")
+        cl = model.get("comfyui_lora", "none")
+        refine_timeout = REFINE_REFINE_TIMEOUT_PER_BASE * len(remote_paths) + 300
+        cmd = (
+            f"MODEL='{cm}' LORA='{cl}' REFINE_ONLY='1' "
+            f"REFINE_INPUT='{','.join(remote_paths)}' python3 /workspace/gen_comfy.py"
+        )
+        remotes = await _comfyui_run_remote(cmd, prompt, timeout=refine_timeout)
+        if not remotes:
+            return None, (
+                "El refino no devolvió imagen. Revisa el box: "
                 f"ssh -p {port} root@{COMFYUI_HOST} 'supervisorctl status comfyui'"
             )
         locals_ = []
@@ -3323,7 +3453,7 @@ async def _generate_comfyui(
             if local:
                 locals_.append(local)
         if not locals_:
-            return None, "No pude descargar la imagen del box."
+            return None, "No pude descargar la imagen refinada del box."
         return locals_, None
     except Exception as e:
         return None, f"Error de ComfyUI: {e}"
@@ -3338,34 +3468,41 @@ async def _send_comfyui_image(
     regen_context: dict,
     model: dict | None = None,
     delete_status: bool = True,
-) -> bool:
+    *,
+    reply_markup: InlineKeyboardMarkup | None = None,
+    save_ref: bool = True,
+) -> types.Message | None:
     """Send a ComfyUI local-file result to Telegram directly (bypasses the
-    URL-download machinery in process_image_result, which chokes on local paths)."""
+    URL-download machinery in process_image_result, which chokes on local paths).
+    Item 2: reply_markup y save_ref configurables; devuelve el mensaje enviado
+    (None si no se pudo leer el archivo)."""
     try:
         with open(str(output), "rb") as f:
             photo = BufferedInputFile(f.read(), filename="comfyui.png")
     except (OSError, TypeError):
         await status_msg.edit_text("No se pudo leer la imagen generada.")
-        return False
+        return None
+    kb = _image_regenerate_keyboard() if reply_markup is None else reply_markup
     sent_msg = await message.answer_photo(
         photo,
         caption=_format_result_caption(prefix, prompt, model=model),
         parse_mode="HTML",
-        reply_markup=_image_regenerate_keyboard(),
+        reply_markup=kb,
         reply_to_message_id=message.message_id,
         allow_sending_without_reply=True,
     )
-    sessions.save_generation_ref(
-        message.chat.id,
-        sent_msg.message_id,
-        provider="comfyui",
-        kind="image",
-        prompt=prompt,
-        regen=regen_context,
-    )
+    if save_ref:
+        sessions.save_generation_ref(
+            message.chat.id,
+            sent_msg.message_id,
+            provider="comfyui",
+            kind="image",
+            prompt=prompt,
+            regen=regen_context,
+        )
     if delete_status:
         await status_msg.delete()
-    return True
+    return sent_msg
 
 
 def _comfyui_is_video(model: dict) -> bool:
@@ -3419,40 +3556,46 @@ async def _send_comfyui_output(
     regen_context: dict,
     *,
     delete_status: bool = True,
+    meta: dict | None = None,
+    cancel_event: asyncio.Event | None = None,
 ) -> bool:
     """Dispatch: video (MiniMax/Wan) o imagen (resto de modelos ComfyUI).
-    output puede ser una LISTA (batch multi-ángulo = 5 imágenes → álbum)."""
+    output puede ser una LISTA (batch multi-ángulo = 5 imágenes → álbum).
+    Item 2: si la generación es refinable (comfyui_refine==1 y meta trae
+    comfyui_remotes) entra al flujo en 2 etapas con confirmación interactiva."""
     if _comfyui_is_video(model):
         return await _send_comfyui_video(
             output, prompt, status_msg, message, prefix, regen_context, model=model,
             delete_status=delete_status,
         )
+    if (
+        model.get("comfyui_refine") == "1"
+        and meta is not None
+        and bool(meta.get("comfyui_remotes"))
+    ):
+        return await _send_comfyui_confirm_refine(
+            model, output, prompt, status_msg, message, prefix, regen_context, meta,
+            delete_status=delete_status, cancel_event=cancel_event,
+        )
     if isinstance(output, list):
         if len(output) == 1:
             output = output[0]
         elif len(output) > 1:
-            return await _send_comfyui_album(
-                output, prompt, status_msg, message, prefix, regen_context, model=model,
-                delete_status=delete_status,
+            return bool(
+                await _send_comfyui_album(
+                    output, prompt, status_msg, message, prefix, regen_context, model=model,
+                    delete_status=delete_status,
+                )
             )
-    return await _send_comfyui_image(
+    return (await _send_comfyui_image(
         output, prompt, status_msg, message, prefix, regen_context, model=model,
         delete_status=delete_status,
-    )
+    )) is not None
 
 
-async def _send_comfyui_album(
-    outputs: list,
-    prompt: str,
-    status_msg: types.Message,
-    message: types.Message,
-    prefix: str,
-    regen_context: dict,
-    *,
-    model: dict | None = None,
-    delete_status: bool = True,
-) -> bool:
-    """Envía varias imágenes como álbum de Telegram (máx 10)."""
+def _build_comfyui_album_media(
+    outputs: list, prefix: str, prompt: str, model: dict | None,
+) -> list[types.InputMediaPhoto]:
     media: list = []
     for i, p in enumerate(outputs[:10]):
         try:
@@ -3468,24 +3611,176 @@ async def _send_comfyui_album(
                 parse_mode="HTML",
             )
         )
+    return media
+
+
+async def _send_comfyui_album(
+    outputs: list,
+    prompt: str,
+    status_msg: types.Message,
+    message: types.Message,
+    prefix: str,
+    regen_context: dict,
+    *,
+    model: dict | None = None,
+    delete_status: bool = True,
+    save_ref: bool = True,
+) -> list[types.Message] | None:
+    """Envía varias imágenes como álbum de Telegram (máx 10). Devuelve los mensajes
+    (None si no se pudo leer ninguna)."""
+    media = _build_comfyui_album_media(outputs, prefix, prompt, model)
     if not media:
         await status_msg.edit_text("No se pudieron leer las imágenes generadas.")
-        return False
+        return None
     sent = await message.answer_media_group(
         media,
         reply_to_message_id=message.message_id,
         allow_sending_without_reply=True,
     )
-    sessions.save_generation_ref(
-        message.chat.id,
-        sent[0].message_id,
-        provider="comfyui",
-        kind="image",
-        prompt=prompt,
-        regen=regen_context,
-    )
+    if save_ref:
+        sessions.save_generation_ref(
+            message.chat.id,
+            sent[0].message_id,
+            provider="comfyui",
+            kind="image",
+            prompt=prompt,
+            regen=regen_context,
+        )
     if delete_status:
         await status_msg.delete()
+    return sent
+
+
+async def _send_comfyui_confirm_refine(
+    model: dict,
+    output: object,
+    prompt: str,
+    status_msg: types.Message,
+    message: types.Message,
+    prefix: str,
+    regen_context: dict,
+    meta: dict,
+    *,
+    delete_status: bool = True,
+    cancel_event: asyncio.Event | None = None,
+) -> bool:
+    """Flujo en 2 etapas: envía la base + teclado de confirmación, espera la decisión
+    (TTL = REFINE_CONFIRM_TIMEOUT) y refina o deja la base como final.
+    Álbum: la base es un álbum (sin inline keyboard) → el teclado de confirmación va en
+    un mensaje de texto SEPARADO; el álbum base se conserva. (A7/A8)"""
+    is_album = isinstance(output, list) and len(output) > 1
+    token = uuid.uuid4().hex[:8]
+    job_id = getattr(cancel_event, "job_id", None)
+    future = _register_pending_refine(
+        token, user_id=message.from_user.id,
+        message_id=message.message_id, job_id=job_id,
+    )
+    kb = _refine_confirm_keyboard(token)
+
+    base_msg = None
+    confirm_msg = None
+    if is_album:
+        await _send_comfyui_album(
+            output, prompt, status_msg, message, prefix, regen_context,
+            model=model, delete_status=False, save_ref=True,
+        )
+        confirm_msg = await message.answer(
+            "¿Refinar las imágenes generadas?",
+            reply_markup=kb,
+        )
+    else:
+        single = output[0] if isinstance(output, list) else output
+        base_msg = await _send_comfyui_image(
+            single, prompt, status_msg, message, prefix, regen_context,
+            model=model, delete_status=False, save_ref=True, reply_markup=kb,
+        )
+        if base_msg is None:
+            _drop_pending_refine(token)
+            return False
+
+    try:
+        decision = await asyncio.wait_for(future, timeout=REFINE_CONFIRM_TIMEOUT)
+    except asyncio.TimeoutError:
+        decision = False
+    finally:
+        _drop_pending_refine(token)
+
+    if _job_cancelled(cancel_event):
+        decision = _REFINE_CANCELLED
+
+    if decision is True:
+        refined, rerr = await _generate_comfyui_refine(
+            model, prompt, list(meta.get("comfyui_remotes", [])),
+            status_msg=status_msg,
+        )
+        if rerr:
+            await status_msg.edit_text(rerr, reply_markup=None)
+            if is_album:
+                if confirm_msg is not None:
+                    try:
+                        await confirm_msg.delete()
+                    except Exception:
+                        pass
+            else:
+                try:
+                    await base_msg.edit_reply_markup(reply_markup=_image_regenerate_keyboard())
+                except Exception:
+                    pass
+            return True
+        if is_album:
+            await _send_comfyui_album(
+                refined, prompt, status_msg, message, prefix, regen_context,
+                model=model, delete_status=delete_status,
+            )
+            if confirm_msg is not None:
+                try:
+                    await confirm_msg.delete()
+                except Exception:
+                    pass
+        else:
+            single_refined = refined[0] if isinstance(refined, list) else refined
+            ok = await _send_comfyui_image(
+                single_refined, prompt, status_msg, message, prefix, regen_context,
+                model=model, delete_status=delete_status,
+            )
+            if ok:
+                try:
+                    await base_msg.delete()
+                except Exception:
+                    pass
+        return True
+
+    if decision is _REFINE_CANCELLED:
+        if is_album:
+            if confirm_msg is not None:
+                try:
+                    await confirm_msg.delete()
+                except Exception:
+                    pass
+        else:
+            try:
+                await base_msg.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+        return True
+
+    # no / timeout → la base es final
+    if is_album:
+        if confirm_msg is not None:
+            try:
+                await safe_edit_text(confirm_msg, "Imagen final.")
+            except Exception:
+                pass
+    else:
+        try:
+            await base_msg.edit_reply_markup(reply_markup=_image_regenerate_keyboard())
+        except Exception:
+            pass
+    if delete_status and status_msg is not None:
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
     return True
 
 

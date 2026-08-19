@@ -46,6 +46,7 @@ def make_fsm_context(*, fsm_state: str | None = None, **data):
 def reset_runtime_state():
     bot.user_state.clear()
     bot._active_jobs.clear()
+    bot._pending_refine.clear()
     deps_snapshot = dict(bot._CONFIG_DEPS)
     yield
     bot.user_state.clear()
