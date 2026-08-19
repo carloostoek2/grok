@@ -1878,7 +1878,7 @@ async def _process_album_edit_from_file_ids(
                     reply_markup=None,
                 )
                 return False
-            # Defensive/dead branch today: handle_album (line ~2559) drops comfyui
+            # Defensive/dead branch today: handle_album drops comfyui
             # media groups and the long-prompt path always collects a single photo,
             # so _process_album_edit_from_file_ids never routes comfyui albums in
             # production. Kept because it IS the correct routing if handle_album is
