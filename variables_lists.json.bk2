@@ -1,0 +1,20 @@
+{
+  "lists": {
+    "poses": [
+      "Fashion model pose: body turned three-quarters toward the camera, one leg stepped forward with the knee slightly bent, weight on the back leg, one hand resting on the hip with the elbow out, the other elegantly holding a katana along the body, shoulders relaxed, chest slightly lifted, and gaze directed at the camera with a cool, confident expression.",
+      "Seated on a low concrete ledge with one leg folded and the other extended, torso upright and slightly angled toward the camera, both katanas resting across her lap in a controlled, composed grip, one hand lightly resting on a hilt while the other lies relaxed on her thigh, shoulders level and expression calm and distant."
+    ],
+    "angles": [
+      "ángulo frontal",
+      "ángulo lateral",
+      "ángulo cenital",
+      "ángulo picado",
+      "ángulo contrapicado"
+    ],
+    "actions": [
+      "Pasando"
+    ]
+  },
+  "template": "{\n  \"subject\": \"young woman cosplaying as 2B (YoRHa No.2 Type B) from NieR:Automata\",\n  \"appearance\": {\n    \"hair\": \"short platinum white bob cut, soft layered bangs, slight volume\",\n    \"face\": \"delicate features, fair subtle olive skin with natural texture, soft lips slightly parted, cool model expression\",\n    \"eyes\": \"covered by black blindfold\",\n    \"body\": \"slim athletic figure, prominent cleavage, long legs\"\n  },\n  \"outfit\": {\n    \"top\": \"black leather-like dress with puffy short sleeves, deep plunging neckline, black lace trim, lace-up corset front with ribbon ties\",\n    \"sleeves\": \"white long fitted sleeves under the black puffy sleeves\",\n    \"skirt\": \"very short front opened to show her lace thong black flared skirt with ornate black lace embroidery and white lace underskirt peeking out\",\n    \"stockings\": \"black sheer thigh-high stockings with intricate lace tops\",\n    \"boots\": \"shiny black leather thigh-high boots with high heels\",\n    \"gloves\": \"black short gloves\",\n    \"accessories\": \"black choker with silver details, layered purple gemstone necklace (amethyst-style pendants), matching dangling purple earrings\"\n  },\n  \"weapons\": \"two black-hilted katanas with silver guards and long slender blades\",\n  \"setting\": {\n    \"location\": \"abandoned industrial alley\",\n    \"elements\": \"graffiti-covered concrete walls, rusty metal scaffolding and pipes, chain-link fence on the right, old tire on the ground, overcast cloudy sky\",\n    \"lighting\": \"soft diffused natural daylight, overcast, subtle shadows\"\n  },\n  \"camera\": {\n    \"framing\": \"full body shot\",\n    \"style\": \"professional fashion photography style\"\n  },\n  \"overall_mood\": \"glamorous model photoshoot atmosphere in an urban decay setting\",\n  \"pose_and_composition\": {\n    \"camera_angle\": \"{angulo}\",\n    \"body_pose\": \"{pose}\",\n    \"action\": \"{accion}\"\n  }\n}",
+  "blacklist": []
+}

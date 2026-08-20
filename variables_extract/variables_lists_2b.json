@@ -1,0 +1,25 @@
+{
+  "fields": {
+    "pose": [
+      "Standing with her weight on one hip, torso gently arched, one hand resting the katana tip-down on the ground while the other trails fingertips slowly up her own thigh, face turned toward the lens with parted lips",
+      "Kneeling on the concrete with knees spread wide, back deeply arched, the katana laid across her shoulders behind her neck and both hands gripping the blade ends, chin lifted and lips parted",
+      "Sitting with legs folded to one side, back arched and one hand planted behind for support while the other pulls the blindfold partway up to reveal a glimpse of her eye, the katana resting across her lap",
+      "Leaning back against the concrete wall with one thigh-high boot planted against it, the katana held loosely at her side pointing down while the free hand slides up her own torso",
+      "On all fours with her back deeply arched, the katana and sheath crossed on the ground in front of her, head turned back over her shoulder toward the camera with her mouth slightly open",
+      "Standing on one leg with the other lifted and bent behind her, the katana raised overhead in one hand and the sheath held low in the other, body drawn into a taut S-curve with her chin tilted up"
+    ],
+    "angle": [
+      "Low-angle camera near the ground looking up the length of her legs and boots, medium framing with shallow depth of field",
+      "Tight close-up on the face and torso, the blindfold and parted lips in sharp focus with a soft-focus background, shallow depth of field",
+      "Eye-level full-body shot from a medium distance, the complete stance and outfit visible, shallow depth of field",
+      "Camera from behind at hip height framing the arch of her back, her over-the-shoulder glance toward the lens, shallow depth of field",
+      "High-angle camera looking down over her figure against the concrete floor, intimate voyeuristic framing, shallow depth of field"
+    ],
+    "look": [
+      "Fully dressed in the gothic 2B outfit: black lace blindfold, black corset dress with ribbon lacing, black leather A-line skirt with embroidered filigree hem, black thigh-high platform boots, katana and sheath in hand",
+      "Skirt removed to reveal a black lace thong, keeping the black corset, lace blindfold, white arm covers and black thigh-high boots, katana and sheath in hand",
+      "Corset opened and pulled down to the waist to bare her torso, black lace thong, lace blindfold, white arm covers and black thigh-high boots, katana and sheath in hand"
+    ]
+  },
+  "template": "create a photo of this person in the raw concrete industrial setting with soft moody light, {pose}, {angle}, {look}"
+}

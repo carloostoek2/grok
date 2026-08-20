@@ -1,0 +1,27 @@
+{
+  "lists": {
+    "poses": [
+      "create a photo of this person in the raw concrete industrial setting with soft moody light, Standing with her weight on one hip, torso gently arched, one hand resting the katana tip-down on the ground while the other trails fingertips slowly up her own thigh, face turned toward the lens with parted lips, Low-angle camera near the ground looking up the length of her legs and boots, medium framing with shallow depth of field, Fully dressed in the gothic 2B outfit: black lace blindfold, black corset dress with ribbon lacing, black leather A-line skirt with embroidered filigree hem, black thigh-high platform boots, katana and sheath in hand",
+      "create a photo of this person in the raw concrete industrial setting with soft moody light, Standing with her weight on one hip, torso gently arched, one hand resting the katana tip-down on the ground while the other trails fingertips slowly up her own thigh, face turned toward the lens with parted lips, Low-angle camera near the ground looking up the length of her legs and boots, medium framing with shallow depth of field, Skirt removed to reveal a black lace thong, keeping the black corset, lace blindfold, white arm covers and black thigh-high boots, katana and sheath in hand",
+      "reate a photo of this person in the raw concrete industrial setting with soft moody light, Standing with her weight on one hip, torso gently arched, one hand resting the katana tip-down on the ground while the other trails fingertips slowly up her own thigh, face turned toward the lens with parted lips, Low-angle camera near the ground looking up the length of her legs and boots, medium framing with shallow depth of field, Corset opened and pulled down to the waist to bare her torso, black lace thong, lace blindfold, white arm covers and black thigh-high boots, katana and sheath in hand",
+      "create a photo of this person in the raw concrete industrial setting with soft moody light, Standing with her weight on one hip, torso gently arched, one hand resting the katana tip-down on the ground while the other trails fingertips slowly up her own thigh, face turned toward the lens with parted lips, Tight close-up on the face and torso, the blindfold and parted lips in sharp focus with a soft-focus background, shallow depth of field, Skirt removed to reveal a black lace thong, keeping the black corset, lace blindfold, white arm covers and black thigh-high boots, katana and sheath in hand",
+      "create a photo of this person in the raw concrete industrial setting with soft moody light, Standing with her weight on one hip, torso gently arched, one hand resting the katana tip-down on the ground while the other trails fingertips slowly up her own thigh, face turned toward the lens with parted lips, Tight close-up on the face and torso, the blindfold and parted lips in sharp focus with a soft-focus background, shallow depth of field, Fully dressed in the gothic 2B outfit: black lace blindfold, black corset dress with ribbon lacing, black leather A-line skirt with embroidered filigree hem, black thigh-high platform boots, katana and sheath in hand"
+    ],
+    "angles": [
+      "ángulo frontal",
+      "ángulo lateral",
+      "ángulo cenital",
+      "ángulo picado",
+      "ángulo contrapicado"
+    ],
+    "actions": [
+      "mirando a la cámara",
+      "con los brazos cruzados",
+      "señalando al horizonte",
+      "sosteniendo una taza de café",
+      "saludando con la mano"
+    ]
+  },
+  "template": "{pose}",
+  "blacklist": []
+}
