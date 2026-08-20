@@ -1103,7 +1103,7 @@ async def test_variables_batch_comfyui_passes_meta_and_cancel_event(sessions_fil
             with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_proc:
                 with patch(
                     "variables_store.random_combination",
-                    return_value=("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
+                    return_value=("de pie, frontal", ("de pie", "frontal")),
                 ):
                     await bot._run_variables_batch(msg, 2, BytesIO(b"img"), None, source_file_id="p1")
 
@@ -1169,7 +1169,7 @@ async def test_variables_batch_comfyui_chain_continues_after_decision(sessions_f
             with patch.object(bot, "_generate_comfyui_refine", new=refine_mock):
                 with patch(
                     "variables_store.random_combination",
-                    return_value=("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
+                    return_value=("de pie, frontal", ("de pie", "frontal")),
                 ):
                     task = asyncio.create_task(
                         bot._run_variables_batch(msg, 2, BytesIO(b"img"), None, source_file_id="p1")
@@ -1548,7 +1548,7 @@ async def test_variables_batch_comfyui_cancel_mid_chain_stops_clean(sessions_fil
             with patch.object(bot, "_generate_comfyui_refine", new=refine_mock):
                 with patch(
                     "variables_store.random_combination",
-                    return_value=("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
+                    return_value=("de pie, frontal", ("de pie", "frontal")),
                 ):
                     task = asyncio.create_task(
                         bot._run_variables_batch(msg, 2, BytesIO(b"img"), None, source_file_id="p1")

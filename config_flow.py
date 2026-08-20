@@ -143,9 +143,10 @@ COMFYUI_LORA_LABELS = {
     "lightx2v": "Rápido (lightx2v)",
     "multiangle": "🎲 Multi-ángulo (auto)",
     "multiangle_batch": "🎲 Multi-ángulo ×5 (auto)",
+    "multipose_batch": "🎲 Multi-pose ×5 (variables)",
 }
 COMFYUI_LORAS_BY_MODEL = {
-    "qwen": ("none", "lightning", "qwen_snofs", "multiangle", "multiangle_batch"),
+    "qwen": ("none", "lightning", "qwen_snofs", "multiangle", "multiangle_batch", "multipose_batch"),
     "krea2": (
         "none", "krea_nsfw", "krea_snapshot", "krea_both", "krea_snofs",
         "krea_edit", "krea_edit_nsfw", "krea_edit_snapshot", "krea_edit_both",

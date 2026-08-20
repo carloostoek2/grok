@@ -1036,6 +1036,20 @@ def test_comfyui_krea_edit_lora_options():
             assert k in VALID_COMFYUI_LORAS
 
 
+def test_comfyui_multipose_batch_lora_option():
+    """multipose_batch existe como LoRA solo para qwen (modo Multi-pose ×5 de /variables)."""
+    from sessions import VALID_COMFYUI_LORAS
+
+    assert "multipose_batch" in VALID_COMFYUI_LORAS
+    assert "multipose_batch" in config_flow.COMFYUI_LORA_LABELS
+    assert "multipose_batch" in bot.COMFYUI_CAPTION_LORA_LABELS
+    assert "multipose_batch" in config_flow.COMFYUI_LORAS_BY_MODEL["qwen"]
+    # Solo qwen: ningún otro modelo lo ofrece (evita un modo sin workflow)
+    for model, loras in config_flow.COMFYUI_LORAS_BY_MODEL.items():
+        if model != "qwen":
+            assert "multipose_batch" not in loras
+
+
 def test_comfyui_krea2_raw_model_options():
     """krea2_raw existe como modelo ComfyUI con los mismos LoRAs que krea2."""
     from sessions import VALID_COMFYUI_MODELS, VALID_COMFYUI_LORAS

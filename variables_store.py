@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Persistent lists of editing variables (poses, angles, actions) for /variables.
+"""Persistent lists of editing variables (poses, angles) for /variables.
 
 The bot's /variables command builds image-edit prompts by randomly combining
 one item from each list. The lists and the prompt template are managed through
@@ -9,7 +9,10 @@ sessions.json.
 Prompt template placeholders:
     {pose}    — a random item from the "poses" list
     {angle}   — a random item from the "angles" list
-    {action}  — a random item from the "actions" list
+
+Decisión de la dueña (2026-08-20): solo DOS campos — pose y ángulo. En foto,
+acción y pose se pisan (una pose puede ser una acción y contradecir la acción
+de la lista), así que la lista "actions" se eliminó del sistema.
 """
 
 from __future__ import annotations
@@ -26,40 +29,42 @@ VARIABLES_FILE = Path(__file__).parent / "variables_lists.json"
 # but protects against interleaved admin edits / concurrent coroutines).
 _LOCK = threading.Lock()
 
-LIST_NAMES = ("poses", "angles", "actions")
+LIST_NAMES = ("poses", "angles")
 
-DEFAULT_TEMPLATE = "{pose}, {angle}, {action}"
+DEFAULT_TEMPLATE = "{pose}, {angle}"
 
 DEFAULT_LISTS: dict[str, list[str]] = {
     "poses": [
-        "de pie",
-        "sentado",
-        "acostado",
-        "de rodillas",
-        "caminando",
-        "saltando",
+        "standing with weight shifted to one leg, free hand resting on hip",
+        "combat-ready stance with knees slightly bent and torso angled forward",
+        "leaning one shoulder against the wall",
+        "classic model contrapposto with one leg slightly forward",
+        "twisted torso looking back over the shoulder",
+        "crouched low with one knee almost touching the ground",
+        "legs crossed at the ankles while standing tall",
+        "dynamic mid-stride pose as if just stopping",
+        "sitting on the steps with knees together",
+        "kneeling on one knee with the sword resting across the thigh",
     ],
     "angles": [
-        "ángulo frontal",
-        "ángulo lateral",
-        "ángulo cenital",
-        "ángulo picado",
-        "ángulo contrapicado",
-    ],
-    "actions": [
-        "mirando a la cámara",
-        "con los brazos cruzados",
-        "señalando al horizonte",
-        "sosteniendo una taza de café",
-        "saludando con la mano",
+        "eye-level full body frontal",
+        "low angle looking slightly upward",
+        "high angle looking downward",
+        "three-quarter view from the left side",
+        "profile side view from the right",
+        "slightly elevated three-quarter rear angle",
+        "close full-body shot from below the waist upward",
+        "over-the-shoulder perspective from behind",
+        "eye-level medium shot",
+        "wide shot from a slight distance",
     ],
 }
 
 # Maximum random draws when trying to avoid repeating a combination within a batch.
 MAX_COMBO_ATTEMPTS = 30
 
-# Positional index of each field within a (pose, angle, action) combo tuple.
-_FIELD_INDEX = {"pose": 0, "angle": 1, "action": 2}
+# Positional index of each field within a (pose, angle) combo tuple.
+_FIELD_INDEX = {"pose": 0, "angle": 1}
 
 # Matches named template placeholders like {pose}, {angle}, {action}.
 _PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
@@ -230,17 +235,17 @@ def _needs_fallback(template: str, values: dict[str, str]) -> bool:
     return any(f not in values for f in _PLACEHOLDER_RE.findall(template))
 
 
-def build_prompt(pose: str, angle: str, action: str) -> str:
-    """Fill the configured template with the three selected items.
+def build_prompt(pose: str, angle: str) -> str:
+    """Fill the configured template with the two selected items.
 
     Placeholders are replaced by regex instead of ``str.format``, so templates
     that contain literal braces — e.g. a JSON-structured prompt — render intact.
     """
     template = get_template()
-    values = {"pose": pose, "angle": angle, "action": action}
+    values = {"pose": pose, "angle": angle}
     if _needs_fallback(template, values):
         # Fall back to a plain join when the template references unknown fields.
-        return f"{pose}, {angle}, {action}"
+        return f"{pose}, {angle}"
     return _PLACEHOLDER_RE.sub(lambda m: values[m.group(1)], template)
 
 
@@ -250,14 +255,14 @@ def template_fields(template: str | None = None) -> list[str]:
     return _PLACEHOLDER_RE.findall(tpl)
 
 
-def combo_key(pose: str, angle: str, action: str) -> tuple:
+def combo_key(pose: str, angle: str) -> tuple:
     """Ordered tuple of the values that actually render into the prompt.
 
     Only the fields the template references contribute, so the key identifies the
     combination by its prompt content (e.g. ``(pose, angle)`` when the template
-    drops ``{action}``), independent of the action list.
+    drops one field), independent of the other lists.
     """
-    values = {"pose": pose, "angle": angle, "action": action}
+    values = {"pose": pose, "angle": angle}
     return tuple(values.get(f, "") for f in template_fields())
 
 
@@ -269,13 +274,13 @@ def _render_positional(template: str, values: list[str]) -> str:
     return _PLACEHOLDER_RE.sub(lambda _m: next(it, ""), template)
 
 
-def build_prompt_shuffled(pose: str, angle: str, action: str) -> str:
+def build_prompt_shuffled(pose: str, angle: str) -> str:
     """Render the template with the contributing values in a different order.
 
     Guarantees a derangement (order differs from the canonical template order) when
     two or more fields contribute; with two fields this is a plain swap.
     """
-    values = {"pose": pose, "angle": angle, "action": action}
+    values = {"pose": pose, "angle": angle}
     ordered = [values.get(f, "") for f in template_fields()]
     if len(ordered) >= 2:
         canonical = list(ordered)
@@ -285,8 +290,8 @@ def build_prompt_shuffled(pose: str, angle: str, action: str) -> str:
     return _render_positional(get_template(), ordered)
 
 
-def random_combination(exclude: set[tuple[str, str, str]] | None = None) -> tuple[str, tuple[str, str, str]] | None:
-    """Pick a random (pose, angle, action) combo, avoiding `exclude` when possible.
+def random_combination(exclude: set[tuple[str, str]] | None = None) -> tuple[str, tuple[str, str]] | None:
+    """Pick a random (pose, angle) combo, avoiding `exclude` when possible.
 
     Returns (prompt, combo) or None when any list is empty.
     """
@@ -300,7 +305,6 @@ def random_combination(exclude: set[tuple[str, str, str]] | None = None) -> tupl
         combo = (
             random.choice(lists["poses"]),
             random.choice(lists["angles"]),
-            random.choice(lists["actions"]),
         )
         if combo not in exclude and combo_key(*combo) not in blacklist:
             break
@@ -308,12 +312,11 @@ def random_combination(exclude: set[tuple[str, str, str]] | None = None) -> tupl
         combo = (
             random.choice(lists["poses"]),
             random.choice(lists["angles"]),
-            random.choice(lists["actions"]),
         )
     return build_prompt(*combo), combo
 
 
-def combo_label(combo: tuple[str, str, str]) -> str:
+def combo_label(combo: tuple[str, str]) -> str:
     """Short human-readable label for a combo (used in status/result text)."""
     return ", ".join(combo)
 

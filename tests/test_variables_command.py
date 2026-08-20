@@ -475,9 +475,9 @@ async def test_batch_generates_count_images_with_distinct_prompts(sessions_file,
     msg = _make_photo_message(caption="/variables 3")
     msg.answer.return_value = _make_status()
     combos = [
-        ("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
-        ("sentado, lateral, saltando", ("sentado", "lateral", "saltando")),
-        ("acostado, cenital, durmiendo", ("acostado", "cenital", "durmiendo")),
+        ("de pie, frontal", ("de pie", "frontal")),
+        ("sentado, lateral", ("sentado", "lateral")),
+        ("acostado, cenital", ("acostado", "cenital")),
     ]
 
     async def _fake_gen(model, prompt, image_data=None, **kwargs):
@@ -517,8 +517,8 @@ async def test_batch_reuses_original_image(sessions_file, variables_file):
         return ([RESULT_URL], None, {"task_id": "t", "index": 0, "provider": "kie"})
 
     combos = [
-        ("a, b, c", ("a", "b", "c")),
-        ("d, e, f", ("d", "e", "f")),
+        ("a, b", ("a", "b")),
+        ("d, e", ("d", "e")),
     ]
     with patch.object(bot, "generate_image", side_effect=_fake_gen):
         with patch.object(bot, "process_image_result", new_callable=AsyncMock):
@@ -539,9 +539,9 @@ async def test_batch_continues_on_provider_error(sessions_file, variables_file):
         return ([RESULT_URL], None, {"task_id": "t", "index": 0, "provider": "kie"})
 
     combos = [
-        ("ok1, b, c", ("ok1", "b", "c")),
-        ("fail, e, f", ("fail", "e", "f")),
-        ("ok3, h, i", ("ok3", "h", "i")),
+        ("ok1, b", ("ok1", "b")),
+        ("fail, e", ("fail", "e")),
+        ("ok3, h", ("ok3", "h")),
     ]
     with patch.object(bot, "generate_image", side_effect=_fake_gen) as mock_gen:
         with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
@@ -566,9 +566,9 @@ async def test_batch_continues_on_generate_exception(sessions_file, variables_fi
         return ([RESULT_URL], None, {"task_id": "t", "index": 0, "provider": "kie"})
 
     combos = [
-        ("ok1, b, c", ("ok1", "b", "c")),
-        ("boom, e, f", ("boom", "e", "f")),
-        ("ok3, h, i", ("ok3", "h", "i")),
+        ("ok1, b", ("ok1", "b")),
+        ("boom, e", ("boom", "e")),
+        ("ok3, h", ("ok3", "h")),
     ]
     with patch.object(bot, "generate_image", side_effect=_fake_gen) as mock_gen:
         with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
@@ -601,7 +601,7 @@ async def test_batch_shuffles_and_retries_once_on_exhaustion(sessions_file, vari
         with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
             with patch(
                 "variables_store.random_combination",
-                return_value=("de pie de frente", ("de pie", "de frente", "mirando")),
+                return_value=("de pie de frente", ("de pie", "de frente")),
             ):
                 await bot._run_variables_batch(msg, 1, BytesIO(b"img"), None)
 
@@ -626,7 +626,7 @@ async def test_batch_blacklists_combo_on_second_exhaustion(sessions_file, variab
         with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
             with patch(
                 "variables_store.random_combination",
-                return_value=("de pie de frente", ("de pie", "de frente", "mirando")),
+                return_value=("de pie de frente", ("de pie", "de frente")),
             ):
                 await bot._run_variables_batch(msg, 1, BytesIO(b"img"), None)
 
@@ -643,8 +643,8 @@ async def test_batch_text_mode_generates_without_image(sessions_file, variables_
     msg = _make_text_message(text="/variables 2")
     msg.answer.return_value = _make_status()
     combos = [
-        ("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
-        ("sentado, lateral, saltando", ("sentado", "lateral", "saltando")),
+        ("de pie, frontal", ("de pie", "frontal")),
+        ("sentado, lateral", ("sentado", "lateral")),
     ]
 
     async def _fake_gen(model, prompt, image_data=None, **kwargs):
@@ -683,8 +683,8 @@ async def test_batch_text_mode_failure_notice(sessions_file, variables_file):
         return ([RESULT_URL], None, {"task_id": "t", "index": 0, "provider": "kie"})
 
     combos = [
-        ("fail, b, c", ("fail", "b", "c")),
-        ("ok2, e, f", ("ok2", "e", "f")),
+        ("fail, b", ("fail", "b")),
+        ("ok2, e", ("ok2", "e")),
     ]
     with patch.object(bot, "generate_image", side_effect=_fake_gen):
         with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
@@ -698,7 +698,7 @@ async def test_batch_text_mode_failure_notice(sessions_file, variables_file):
     ]
     assert len(fail_calls) == 1
     assert "Generación 1/2 falló con el siguiente prompt:" in fail_calls[0]
-    assert "fail, b, c" in fail_calls[0]
+    assert "fail, b" in fail_calls[0]
 
 
 async def test_batch_text_mode_double_exhaustion_blacklists(sessions_file, variables_file):
@@ -715,7 +715,7 @@ async def test_batch_text_mode_double_exhaustion_blacklists(sessions_file, varia
         with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
             with patch(
                 "variables_store.random_combination",
-                return_value=("de pie de frente", ("de pie", "de frente", "mirando")),
+                return_value=("de pie de frente", ("de pie", "de frente")),
             ):
                 await bot._run_variables_batch(msg, 1, None, None, mode="text")
 
@@ -735,7 +735,7 @@ async def test_batch_text_mode_double_exhaustion_blacklists(sessions_file, varia
 
 async def test_batch_empty_list_guard(sessions_file, variables_file):
     msg = _make_photo_message(caption="/variables 2")
-    empty_lists = {"poses": [], "angles": ["a"], "actions": ["b"]}
+    empty_lists = {"poses": [], "angles": ["a"]}
     with patch("variables_store.get_lists", return_value=empty_lists):
         with patch.object(bot, "generate_image", new_callable=AsyncMock) as mock_gen:
             await bot._run_variables_batch(msg, 2, BytesIO(b"img"), None)
@@ -752,9 +752,9 @@ async def test_batch_cancel_stops_after_completed(sessions_file, variables_file)
         return ([RESULT_URL], None, {"task_id": "t", "index": 0, "provider": "kie"})
 
     combos = [
-        ("a1, b1, c1", ("a1", "b1", "c1")),
-        ("a2, b2, c2", ("a2", "b2", "c2")),
-        ("a3, b3, c3", ("a3", "b3", "c3")),
+        ("a1, b1", ("a1", "b1")),
+        ("a2, b2", ("a2", "b2")),
+        ("a3, b3", ("a3", "b3")),
     ]
     # checks: pre/post-1(False,False), pre/post-2(False,False), pre-3(True → cancel)
     with patch.object(bot, "generate_image", side_effect=_fake_gen):
@@ -793,8 +793,8 @@ async def test_two_batches_run_without_cancelling_each_other(sessions_file, vari
             with patch(
                 "variables_store.random_combination",
                 side_effect=[
-                    ("a, b, c", ("a", "b", "c")),
-                    ("d, e, f", ("d", "e", "f")),
+                    ("a, b", ("a", "b")),
+                    ("d, e", ("d", "e")),
                 ],
             ):
                 task_a = asyncio.create_task(
@@ -851,7 +851,7 @@ async def test_batch_regen_context_has_kie_provider(sessions_file, variables_fil
         with patch.object(bot, "process_image_result", side_effect=_fake_process):
             with patch(
                 "variables_store.random_combination",
-                return_value=("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
+                return_value=("de pie, frontal", ("de pie", "frontal")),
             ):
                 await bot._run_variables_batch(
                     msg, 1, BytesIO(b"img"), kie_ref, source_file_id="p1"
@@ -861,7 +861,7 @@ async def test_batch_regen_context_has_kie_provider(sessions_file, variables_fil
     regen = captured["regen_context"]
     assert regen["provider"] == "kie"
     assert regen["source_file_id"] == "p1"
-    assert regen["prompt"] == "de pie, frontal, mirando"
+    assert regen["prompt"] == "de pie, frontal"
     assert regen["kie_source_ref"] == {"task_id": "task-abc", "index": 0}
     assert captured.get("download_allowlist") == "kie"
     assert captured.get("delete_status") is False
@@ -885,7 +885,7 @@ async def test_batch_kie_reply_ref_without_image_data(sessions_file, variables_f
         with patch.object(bot, "process_image_result", side_effect=_fake_process):
             with patch(
                 "variables_store.random_combination",
-                return_value=("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
+                return_value=("de pie, frontal", ("de pie", "frontal")),
             ):
                 await bot._run_variables_batch(
                     msg, 1, None, kie_ref, source_file_id=None
@@ -913,7 +913,7 @@ async def test_batch_uses_xai_when_configured(sessions_file, variables_file, mon
         with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
             with patch(
                 "variables_store.random_combination",
-                return_value=("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
+                return_value=("de pie, frontal", ("de pie", "frontal")),
             ):
                 await bot._run_variables_batch(
                     msg, 1, original, None, source_file_id="p1"
@@ -940,7 +940,7 @@ async def test_batch_uses_replicate_when_configured(sessions_file, variables_fil
         with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
             with patch(
                 "variables_store.random_combination",
-                return_value=("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
+                return_value=("de pie, frontal", ("de pie", "frontal")),
             ):
                 await bot._run_variables_batch(
                     msg, 1, original, None, source_file_id="p1"
@@ -965,7 +965,7 @@ async def test_batch_uses_seedream_when_selected(sessions_file, variables_file):
         with patch.object(bot, "process_image_result", new_callable=AsyncMock):
             with patch(
                 "variables_store.random_combination",
-                return_value=("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
+                return_value=("de pie, frontal", ("de pie", "frontal")),
             ):
                 await bot._run_variables_batch(
                     msg, 1, original, None, source_file_id="p1"
@@ -1037,7 +1037,7 @@ async def test_batch_regen_context_matches_configured_provider(sessions_file, va
         with patch.object(bot, "process_image_result", side_effect=_fake_process):
             with patch(
                 "variables_store.random_combination",
-                return_value=("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
+                return_value=("de pie, frontal", ("de pie", "frontal")),
             ):
                 await bot._run_variables_batch(
                     msg, 1, BytesIO(b"img"), kie_ref, source_file_id="p1"
@@ -1094,7 +1094,7 @@ async def test_batch_comfyui_uses_selected_model_and_sends_via_comfyui(
             with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_proc:
                 with patch(
                     "variables_store.random_combination",
-                    return_value=("de pie, frontal, mirando", ("de pie", "frontal", "mirando")),
+                    return_value=("de pie, frontal", ("de pie", "frontal")),
                 ):
                     await bot._run_variables_batch(
                         msg, 2, BytesIO(b"img"), None, source_file_id="p1"
@@ -1197,8 +1197,8 @@ async def test_batch_passes_caption_prompt_to_result_senders(sessions_file, vari
         return ([RESULT_URL], None, {"task_id": "t", "index": 0, "provider": "kie"})
 
     combos = [
-        ("a1, b, c", ("a1", "b", "c")),
-        ("a2, e, f", ("a2", "e", "f")),
+        ("a1, b", ("a1", "b")),
+        ("a2, e", ("a2", "e")),
     ]
     with patch.object(bot, "generate_image", side_effect=_fake_gen):
         with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
@@ -1274,9 +1274,9 @@ async def test_batch_failure_notifies_with_prompt(sessions_file, variables_file)
         return ([RESULT_URL], None, {"task_id": "t", "index": 0, "provider": "kie"})
 
     combos = [
-        ("ok1, b, c", ("ok1", "b", "c")),
-        ("fail, e, f", ("fail", "e", "f")),
-        ("ok3, h, i", ("ok3", "h", "i")),
+        ("ok1, b", ("ok1", "b")),
+        ("fail, e", ("fail", "e")),
+        ("ok3, h", ("ok3", "h")),
     ]
     with patch.object(bot, "generate_image", side_effect=_fake_gen) as mock_gen:
         with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
@@ -1291,7 +1291,7 @@ async def test_batch_failure_notifies_with_prompt(sessions_file, variables_file)
     ]
     assert len(fail_calls) == 1
     assert "Edición 2/3 falló con el siguiente prompt:" in fail_calls[0]
-    assert "fail, e, f" in fail_calls[0]
+    assert "fail, e" in fail_calls[0]
 
 
 async def test_batch_failure_notifies_shuffled_prompt_on_double_exhaustion(sessions_file, variables_file):
@@ -1307,7 +1307,7 @@ async def test_batch_failure_notifies_shuffled_prompt_on_double_exhaustion(sessi
         with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
             with patch(
                 "variables_store.random_combination",
-                return_value=("de pie de frente", ("de pie", "de frente", "mirando")),
+                return_value=("de pie de frente", ("de pie", "de frente")),
             ):
                 await bot._run_variables_batch(msg, 1, BytesIO(b"img"), None)
 
@@ -1332,8 +1332,8 @@ async def test_batch_failure_notifies_on_generate_exception(sessions_file, varia
         return ([RESULT_URL], None, {"task_id": "t", "index": 0, "provider": "kie"})
 
     combos = [
-        ("boom, b, c", ("boom", "b", "c")),
-        ("ok2, e, f", ("ok2", "e", "f")),
+        ("boom, b", ("boom", "b")),
+        ("ok2, e", ("ok2", "e")),
     ]
     with patch.object(bot, "generate_image", side_effect=_fake_gen):
         with patch.object(bot, "process_image_result", new_callable=AsyncMock) as mock_res:
@@ -1346,4 +1346,4 @@ async def test_batch_failure_notifies_on_generate_exception(sessions_file, varia
     ]
     assert len(fail_calls) == 1
     assert "Edición 1/2 falló" in fail_calls[0]
-    assert "boom, b, c" in fail_calls[0]
+    assert "boom, b" in fail_calls[0]

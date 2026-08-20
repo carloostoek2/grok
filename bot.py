@@ -324,6 +324,7 @@ COMFYUI_CAPTION_LORA_LABELS = {
     "lightning": "Lightning 4 pasos",
     "multiangle": "Multi-ángulo (auto)",
     "multiangle_batch": "Multi-ángulo ×5 (auto)",
+    "multipose_batch": "Multi-pose ×5 (variables)",
     "krea_nsfw": "NSFW V4",
     "krea_snapshot": "Realistic Snapshot",
     "krea_both": "NSFW V4 + Realistic Snapshot",
@@ -2119,6 +2120,123 @@ async def _notify_variables_failure(
         pass
 
 
+# Modo Multi-pose: batch de 5 poses en UN solo round-trip (qwen + multipose_batch).
+# Las 5 frases de rama se construyen desde las listas de variables (pose + ángulo),
+# cada una con el trigger <sks> de la LoRA de ángulos (validado 2026-08-20: la
+# LoRA ayuda a mantener identidad consistente entre las 5 poses).
+MULTIPOSE_BATCH_SIZE = 5
+
+
+async def _run_multipose_batch(
+    model: dict,
+    message: types.Message,
+    image_data: BytesIO | None,
+    *,
+    source_file_id: str | None = None,
+    mode: str = "edit",
+) -> None:
+    """Modo Multi-pose ×5: saca 5 combos (pose, ángulo) de variables_store y los
+    manda TODOS en un solo round-trip al box (workflow multipose batch). El box
+    devuelve 5 imágenes → álbum. La foto de entrada es obligatoria."""
+    uid = message.from_user.id
+    if image_data is None:
+        await message.answer(
+            "🎲 <b>Multi-pose</b> necesita una foto de entrada:\n"
+            "envía la foto con <b>/variables</b> en el caption, o responde a una foto.",
+            parse_mode="HTML",
+        )
+        return
+    lists = variables_store.get_lists()
+    for name in variables_store.LIST_NAMES:
+        if not lists[name]:
+            await message.answer(
+                f"La lista de <b>{variables_flow.LIST_LABELS[name]}</b> está vacía.\n"
+                "Usa <b>/listas</b> para añadir opciones antes de usar el modo Multi-pose.",
+                parse_mode="HTML",
+            )
+            return
+    cancel_event = _start_job(uid, "variables")
+    if cancel_event is None:
+        await message.answer(_JOBS_FULL_MSG)
+        return
+    status_msg = None
+    try:
+        status_msg = await message.answer(
+            f"🎲 <b>Multi-pose ×{MULTIPOSE_BATCH_SIZE}</b>: generando {MULTIPOSE_BATCH_SIZE} poses con {model['name']}...",
+            parse_mode="HTML",
+            reply_markup=_cancel_job_keyboard(cancel_event),
+        )
+        used_combos: set[tuple[str, str]] = set()
+        rama_prompts: list[str] = []
+        combos: list[tuple[str, str]] = []
+        for _ in range(MULTIPOSE_BATCH_SIZE):
+            combo = variables_store.random_combination(exclude=used_combos)
+            if combo is None:
+                await status_msg.edit_text(
+                    "No se pudo construir el prompt: alguna lista está vacía. Usa /listas.",
+                    reply_markup=None,
+                )
+                return
+            prompt, combo_tuple = combo
+            used_combos.add(combo_tuple)
+            combos.append(combo_tuple)
+            # Cada rama del workflow multipose lleva el trigger <sks> + la frase
+            # de pose/ángulo (mismo formato validado en el box).
+            rama_prompts.append(f"<sks> {prompt}")
+        if _job_cancelled(cancel_event):
+            await status_msg.edit_text("⏹ Cancelado.", reply_markup=None)
+            return
+        output, err, meta = await generate_image(
+            model,
+            rama_prompts[0],
+            image_data,
+            status_msg=status_msg,
+            status_label=f"🎲 <b>Multi-pose</b>: generando {MULTIPOSE_BATCH_SIZE} poses con {model['name']}...",
+            status_parse_mode="HTML",
+            prompts=rama_prompts,
+        )
+        if _job_cancelled(cancel_event):
+            await status_msg.edit_text("⏹ Cancelado.", reply_markup=None)
+            return
+        if err:
+            await status_msg.edit_text(f"Error: {_escape_prompt(err)}", reply_markup=None)
+            return
+        regen_context = _build_image_regen_context(
+            model=model,
+            user_id=uid,
+            prompt=variables_store.combo_label(combos[0]),
+            mode="edit",
+            source_file_id=source_file_id,
+        )
+        await _send_comfyui_output(
+            model,
+            output,
+            variables_store.combo_label(combos[0]),
+            status_msg,
+            message,
+            f"Multi-pose ×{MULTIPOSE_BATCH_SIZE}",
+            regen_context,
+            delete_status=False,
+            meta=meta,
+            cancel_event=cancel_event,
+            caption_prompt=True,
+        )
+        # Resumen con las 5 combinaciones usadas
+        try:
+            lines = [f"<b>🎲 Multi-pose ×{MULTIPOSE_BATCH_SIZE}</b> — poses usadas:"]
+            lines += [f"  {i + 1}. {_escape_prompt(variables_store.combo_label(c))}" for i, c in enumerate(combos)]
+            await message.answer("\n".join(lines), parse_mode="HTML")
+        except Exception:
+            pass
+    except Exception as e:
+        if status_msg:
+            await status_msg.edit_text(f"Error inesperado: {e}", reply_markup=None)
+        else:
+            await message.answer(f"Error inesperado: {e}")
+    finally:
+        _finish_job(uid, cancel_event)
+
+
 async def _run_variables_batch(
     message: types.Message,
     count: int,
@@ -2140,10 +2258,24 @@ async def _run_variables_batch(
     if reject_msg:
         await message.answer(reject_msg)
         return
+    assert model is not None  # reject_msg None → modelo válido
     use_comfyui = model.get("provider") == "comfyui"
     is_text = mode == "text"
     verb = "generando" if is_text else "editando"
     fail_label = "Generación" if is_text else "Edición"
+
+    # Modo Multi-pose (qwen + multipose_batch): batch de 5 poses en UN solo
+    # round-trip al box (en vez de N generaciones individuales). Las 5 frases
+    # de rama se construyen desde las listas de variables (pose + ángulo).
+    if (
+        use_comfyui
+        and model.get("comfyui_model") == "qwen"
+        and model.get("comfyui_lora") == "multipose_batch"
+    ):
+        await _run_multipose_batch(
+            model, message, image_data, source_file_id=source_file_id, mode=mode,
+        )
+        return
 
     lists = variables_store.get_lists()
     for name in variables_store.LIST_NAMES:
@@ -3270,6 +3402,7 @@ async def generate_image(
     status_msg: types.Message | None = None,
     status_label: str = "",
     status_parse_mode: str | None = None,
+    prompts: list[str] | None = None,
 ) -> tuple[object | None, str | None, dict | None]:
     prov = model.get("provider", "?")
     model_id = model.get("id")
@@ -3292,6 +3425,7 @@ async def generate_image(
                 image_data,
                 reference_image=reference_image,
                 kie_source_ref=kie_source_ref,
+                prompts=prompts,
             )
         except Exception as exc:
             output, err, meta = None, f"Error de {_prov_label(prov)}: {exc}", None
@@ -3317,6 +3451,7 @@ async def _generate_once(
     *,
     reference_image: BytesIO | None = None,
     kie_source_ref: dict | None = None,
+    prompts: list[str] | None = None,
 ) -> tuple[object | None, str | None, dict | None]:
     """Single generation attempt against the provider selected by model["provider"]."""
     prov = model.get("provider", "?")
@@ -3333,7 +3468,7 @@ async def _generate_once(
             kie_source_ref=kie_source_ref,
         )
     if prov == "comfyui":
-        locals_, err, meta = await _generate_comfyui(model, prompt, image_data)
+        locals_, err, meta = await _generate_comfyui(model, prompt, image_data, prompts=prompts)
         return locals_, err, meta
     output, err = await _generate_replicate(model, prompt, image_data)
     return output, err, None
@@ -3464,12 +3599,18 @@ async def _generate_comfyui(
     model: dict,
     prompt: str,
     image_data: BytesIO | None = None,
+    *,
+    prompts: list[str] | None = None,
 ) -> tuple[list[str] | None, str | None, dict | None]:
     """Generate (txt2img) or edit (img2img) via ComfyUI on the Vast box.
 
     Generates only the base image (no refine cascade). The remote paths are
     returned in meta["comfyui_remotes"] so the confirm flow can refine them in a
-    second pass. Returns (lista de local_paths, err, meta)."""
+    second pass. Returns (lista de local_paths, err, meta).
+
+    `prompts`: lista opcional de frases de rama (modo multipose_batch). Cuando
+    viene, se envía en el payload JSON como "prompts" y el box inyecta cada una
+    en su rama del workflow multipose (batch de 5 en un solo round-trip)."""
     _ssh_base, port, err = _comfyui_ssh_base()
     if err:
         return None, err, None
@@ -3487,6 +3628,11 @@ async def _generate_comfyui(
                     "La edición de identidad necesita una foto de entrada:\n"
                     "envía la foto de la persona + el prompt de edición (o responde a una foto)."
                 ), None
+            if cm == "qwen" and cl == "multipose_batch":
+                return None, (
+                    "El modo Multi-pose necesita una foto de entrada:\n"
+                    "envía la foto con /variables (o responde a una foto)."
+                ), None
             cmd = f"MODEL='{cm}' LORA='{cl}' python3 /workspace/gen_comfy.py"
             remotes, _rc = await _comfyui_run_remote(cmd, prompt)
         else:
@@ -3495,14 +3641,14 @@ async def _generate_comfyui(
             # de la MISMA conexión ssh que ejecuta gen_comfy.py (protocolo JSON,
             # retrocompatible en el box).
             image_data.seek(0)
-            payload = json.dumps(
-                {
-                    "prompt": prompt,
-                    "image_b64": base64.b64encode(image_data.read()).decode("ascii"),
-                }
-            )
+            payload: dict = {
+                "prompt": prompt,
+                "image_b64": base64.b64encode(image_data.read()).decode("ascii"),
+            }
+            if prompts:
+                payload["prompts"] = prompts
             cmd = f"MODEL='{cm}' LORA='{cl}' python3 /workspace/gen_comfy.py"
-            remotes, _rc = await _comfyui_run_remote(cmd, payload)
+            remotes, _rc = await _comfyui_run_remote(cmd, json.dumps(payload))
         if not remotes:
             return None, (
                 "ComfyUI no devolvió imagen. Revisa el box: "

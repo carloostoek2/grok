@@ -26,7 +26,7 @@ DEFAULT_COMFYUI_MODEL = "krea2"
 DEFAULT_COMFYUI_LORA = "none"
 DEFAULT_COMFYUI_REFINE = "1"  # 1 = refinamiento final ON (FaceDetailer + upscale + refino RAW)
 VALID_COMFYUI_MODELS = ("qwen", "krea2", "krea2_raw", "krea2_moody", "wan_i2v")
-VALID_COMFYUI_LORAS = ("none", "lightning", "krea_nsfw", "krea_snapshot", "krea_both", "lightx2v", "multiangle", "multiangle_batch", "krea_edit", "krea_edit_nsfw", "krea_edit_snapshot", "krea_edit_both", "krea_snofs", "qwen_snofs")
+VALID_COMFYUI_LORAS = ("none", "lightning", "krea_nsfw", "krea_snapshot", "krea_both", "lightx2v", "multiangle", "multiangle_batch", "multipose_batch", "krea_edit", "krea_edit_nsfw", "krea_edit_snapshot", "krea_edit_both", "krea_snofs", "qwen_snofs")
 DEFAULT_VIDEO_DURATION = 5
 DEFAULT_VIDEO_ASPECT_RATIO = "16:9"
 DEFAULT_VIDEO_RESOLUTION = "720p"

@@ -80,13 +80,13 @@ async def test_cmd_listas_shows_menu(variables_file, mock_vars_safe_edit):
     text = msg.answer.call_args.args[0]
     assert "Poses" in text
     assert "Ángulos" in text
-    assert "Acciones" in text
-    assert "{pose}, {angle}, {action}" in text
+    assert "Acciones" not in text
+    assert "{pose}, {angle}" in text
     kb = msg.answer.call_args.kwargs["reply_markup"]
     callbacks = [btn.callback_data for row in kb.inline_keyboard for btn in row]
     assert "var:open:poses" in callbacks
     assert "var:open:angles" in callbacks
-    assert "var:open:actions" in callbacks
+    assert "var:open:actions" not in callbacks
 
 
 async def test_cmd_listas_first_tap_not_rejected(variables_file, mock_vars_safe_edit):
@@ -159,7 +159,7 @@ async def test_handle_var_open_shows_list_screen(variables_file, mock_vars_safe_
     await variables_flow.handle_var_open(cb, _make_state())
     text = mock_vars_safe_edit.call_args.args[1]
     assert "Poses" in text
-    assert "1. de pie" in text
+    assert "1. standing with weight shifted to one leg, free hand resting on hip" in text
     kb = mock_vars_safe_edit.call_args.kwargs["reply_markup"]
     callbacks = [btn.callback_data for row in kb.inline_keyboard for btn in row]
     assert "var:add:poses" in callbacks
@@ -196,7 +196,7 @@ async def test_add_flow_requests_text_then_adds(variables_file, mock_vars_safe_e
 
 
 async def test_add_duplicate_keeps_prompt(variables_file, mock_vars_safe_edit):
-    msg = _make_message(text="de pie")
+    msg = _make_message(text="standing with weight shifted to one leg, free hand resting on hip")
     await variables_flow.handle_add_text(msg, _make_state("add_item", vars_list="poses"))
     assert "ya existe" in msg.answer.call_args.args[0]
 
@@ -303,9 +303,9 @@ async def test_template_flow_saves_new_template(variables_file, mock_vars_safe_e
     await variables_flow.handle_var_tmpl(cb, state)
     state.set_state.assert_awaited_once_with(variables_flow.VarStates.template)
 
-    msg = _make_message(text="El sujeto está {pose} con {angle} y {action}")
+    msg = _make_message(text="El sujeto está {pose} con {angle}")
     await variables_flow.handle_template_text(msg, _make_state("template"))
-    assert variables_store.get_template() == "El sujeto está {pose} con {angle} y {action}"
+    assert variables_store.get_template() == "El sujeto está {pose} con {angle}"
     # back to the menu (fresh panel)
     text = msg.answer.call_args.args[0]
     assert "Listas de variables" in text
@@ -313,7 +313,7 @@ async def test_template_flow_saves_new_template(variables_file, mock_vars_safe_e
 
 async def test_template_flow_accepts_long_template(variables_file, mock_vars_safe_edit):
     """Templates longer than 500 chars are accepted and saved in full."""
-    long_template = ("El sujeto está {pose} con {angle} y {action}, además " * 20).strip()
+    long_template = ("El sujeto está {pose} con {angle}, además " * 20).strip()
     assert len(long_template) > 500
     msg = _make_message(text=long_template)
     await variables_flow.handle_template_text(
@@ -340,9 +340,9 @@ def test_list_text_caps_display(variables_file):
     for i in range(40):
         variables_store.add_item("poses", f"opción extra {i}")
     text = variables_flow._list_text("poses")
-    assert "y 16 más" in text  # 6 defaults + 40 added = 46; 30 shown → 16 hidden
+    assert "y 20 más" in text  # 10 defaults + 40 added = 50; 30 shown → 20 hidden
     assert "opción extra 39" not in text  # beyond the cap is not rendered
-    assert "1. de pie" in text
+    assert "1. standing with weight shifted to one leg, free hand resting on hip" in text
 
 
 # ---------------------------------------------------------------------------

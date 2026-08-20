@@ -40,7 +40,6 @@ import variables_store
 LIST_LABELS = {
     "poses": "Poses",
     "angles": "Ángulos",
-    "actions": "Acciones",
 }
 
 # Telegram allows up to 100 inline buttons; keep headroom for the back button.
@@ -170,7 +169,7 @@ def _menu_text() -> str:
     template = variables_store.get_template()
     lines.append(f"\n<b>Plantilla:</b> <code>{_esc(_truncate(template, 80))}</code>")
     lines.append(
-        "\n<i>Placeholders: {pose}, {angle}, {action}.</i> "
+        "\n<i>Placeholders: {pose}, {angle}.</i> "
         "Toque una lista para gestionarla."
     )
     return "\n".join(lines)
@@ -554,8 +553,8 @@ async def handle_var_tmpl(callback: types.CallbackQuery, state: FSMContext):
     await safe_edit_text(
         callback.message,
         "✏️ <b>Plantilla del prompt</b>\n\n"
-        "Usa los placeholders <code>{pose}</code>, <code>{angle}</code> y "
-        "<code>{action}</code> para insertar las opciones aleatorias.\n\n"
+        "Usa los placeholders <code>{pose}</code> y "
+        "<code>{angle}</code> para insertar las opciones aleatorias.\n\n"
         f"Actual: <code>{_esc(_truncate(template, 200))}</code>\n\n"
         "Envía la nueva plantilla:",
         parse_mode="HTML",
