@@ -3617,6 +3617,9 @@ async def _generate_comfyui(
         return None, err, None
     cm = model.get("comfyui_model", "krea2")
     cl = model.get("comfyui_lora", "none")
+    # Los videos (Wan/MiniMax) tardan más que el timeout de imágenes (600s):
+    # MiniMax 6s ≈ 10-15 min de sampling en la 5090.
+    run_timeout = 1500 if cm in ("wan_i2v", "minimax_i2v") else 600
     try:
         if image_data is None:
             if cm in ("wan_i2v", "minimax_i2v"):
@@ -3635,7 +3638,7 @@ async def _generate_comfyui(
                     "envía la foto con /variables (o responde a una foto)."
                 ), None
             cmd = f"MODEL='{cm}' LORA='{cl}' python3 /workspace/gen_comfy.py"
-            remotes, _rc = await _comfyui_run_remote(cmd, prompt)
+            remotes, _rc = await _comfyui_run_remote(cmd, prompt, timeout=run_timeout)
         else:
             # Single round-trip: en vez de un scp de subida aparte (una conexión
             # SSH extra + transferencia), la imagen viaja en base64 por el stdin
@@ -3649,7 +3652,7 @@ async def _generate_comfyui(
             if prompts:
                 payload["prompts"] = prompts
             cmd = f"MODEL='{cm}' LORA='{cl}' python3 /workspace/gen_comfy.py"
-            remotes, _rc = await _comfyui_run_remote(cmd, json.dumps(payload))
+            remotes, _rc = await _comfyui_run_remote(cmd, json.dumps(payload), timeout=run_timeout)
         if not remotes:
             return None, (
                 "ComfyUI no devolvió imagen. Revisa el box: "
