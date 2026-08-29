@@ -318,6 +318,7 @@ COMFYUI_CAPTION_MODEL_LABELS = {
     "krea2_raw": "Krea 2 RAW",
     "krea2_moody": "Moody (Krea 2 Mix)",
     "wan_i2v": "Wan 2.2",
+    "minimax_i2v": "MiniMax H3",
 }
 COMFYUI_CAPTION_LORA_LABELS = {
     "none": "Sin LoRA",
@@ -3618,7 +3619,7 @@ async def _generate_comfyui(
     cl = model.get("comfyui_lora", "none")
     try:
         if image_data is None:
-            if cm == "wan_i2v":
+            if cm in ("wan_i2v", "minimax_i2v"):
                 return None, (
                     "El generador de video necesita una foto de entrada:\n"
                     "envía una foto con el prompt, o responde a una foto con el texto."
@@ -3771,8 +3772,8 @@ async def _send_comfyui_image(
 
 
 def _comfyui_is_video(model: dict) -> bool:
-    """Los modelos de video (Wan 2.2) devuelven MP4; el resto imágenes."""
-    return model.get("comfyui_model") == "wan_i2v"
+    """Los modelos de video (Wan 2.2, MiniMax H3) devuelven MP4; el resto imágenes."""
+    return model.get("comfyui_model") in ("wan_i2v", "minimax_i2v")
 
 
 async def _send_comfyui_video(

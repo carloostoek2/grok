@@ -127,6 +127,7 @@ COMFYUI_MODEL_LABELS = {
     "krea2_raw": "Krea 2 (RAW)",
     "krea2_moody": "Moody (Krea 2 Mix)",
     "wan_i2v": "Wan 2.2 (video)",
+    "minimax_i2v": "MiniMax H3 (video)",
 }
 COMFYUI_LORA_LABELS = {
     "none": "Sin LoRA",
@@ -160,6 +161,7 @@ COMFYUI_LORAS_BY_MODEL = {
         "krea_edit", "krea_edit_nsfw", "krea_edit_snapshot", "krea_edit_both",
     ),
     "wan_i2v": ("none", "lightx2v"),
+    "minimax_i2v": ("none",),
 }
 
 
@@ -177,7 +179,7 @@ def config_comfyui_keyboard(deps: dict[str, Any], user_id: int) -> InlineKeyboar
     cfg = get_comfyui_config(user_id)
     model_labels = COMFYUI_MODEL_LABELS
     rows = []
-    for k in ("qwen", "krea2", "krea2_raw", "krea2_moody", "wan_i2v"):
+    for k in ("qwen", "krea2", "krea2_raw", "krea2_moody", "wan_i2v", "minimax_i2v"):
         mark = "✅ " if k == cfg["model"] else "• "
         rows.append(
             [
