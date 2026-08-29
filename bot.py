@@ -3790,9 +3790,14 @@ async def _send_comfyui_video(
     caption_prompt: bool = False,
 ) -> bool:
     """Send a ComfyUI Wan/MiniMax MP4 result to Telegram as a video."""
+    if isinstance(output, (list, tuple)):
+        output = output[0] if output else None
+    if not output:
+        await status_msg.edit_text("No se pudo leer el video generado.")
+        return False
     try:
         with open(str(output), "rb") as f:
-            video = BufferedInputFile(f.read(), filename="wan2.mp4")
+            video = BufferedInputFile(f.read(), filename="video.mp4")
     except (OSError, TypeError):
         await status_msg.edit_text("No se pudo leer el video generado.")
         return False
