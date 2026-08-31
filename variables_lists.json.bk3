@@ -1,0 +1,24 @@
+{
+  "lists": {
+    "poses": [],
+    "angles": [
+      "eye-level full body frontal",
+      "low angle looking slightly upward",
+      "high angle looking downward",
+      "three-quarter view from the left side",
+      "dutch tilt (plano holandés) mild",
+      "profile side view from the right",
+      "slightly elevated three-quarter rear angle",
+      "close full-body shot from below the waist upward",
+      "over-the-shoulder perspective from behind",
+      "dynamic low dutch angle emphasizing legs and boots"
+    ]
+  },
+  "template": "Create a new image of this woman, but now {pose} {angle}",
+  "blacklist": [
+    [
+      "dynamic mid-stride pose as if just stopping",
+      "profile side view from the right"
+    ]
+  ]
+}
