@@ -120,7 +120,8 @@ def config_variant_keyboard(deps: dict[str, Any], user_id: int) -> InlineKeyboar
 
 
 # LoRAs válidos por modelo ComfyUI. Krea 2 y Moody COMPARTEN los mismos LoRAs
-# (menú reutilizado). Wan 2.2: none = "Full" (calidad, 40 pasos), lightx2v = "Rápido".
+# (menú reutilizado). Wan 2.2: none = "Full" (calidad, 40 pasos), lightx2v = "Rápido",
+# dr34ml4y = "DR34ML4Y All-In-One NSFW" (posiciones, 24 pasos).
 COMFYUI_MODEL_LABELS = {
     "qwen": "Qwen-Image-Edit 2511",
     "krea2": "Krea 2 (Turbo)",
@@ -135,6 +136,7 @@ COMFYUI_LORA_LABELS = {
     "krea_nsfw": "Krea2 NSFW V4",
     "krea_snapshot": "Realistic Snapshot",
     "krea_both": "NSFW V4 + Realistic Snapshot",
+    "krea_reddit": "Reddit (textura + phone)",
     "krea_snofs": "SNOFS v1.3D",
     "qwen_snofs": "SNOFS v1.3",
     "krea_edit": "✏️ Editar (Identity Edit)",
@@ -142,6 +144,7 @@ COMFYUI_LORA_LABELS = {
     "krea_edit_snapshot": "✏️ Editar + Snapshot",
     "krea_edit_both": "✏️ Editar + NSFW + Snapshot",
     "lightx2v": "Rápido (lightx2v)",
+    "dr34ml4y": "DR34ML4Y (All-In-One NSFW)",
     "multiangle": "🎲 Multi-ángulo (auto)",
     "multiangle_batch": "🎲 Multi-ángulo ×5 (auto)",
     "multipose_batch": "🎲 Multi-pose ×5 (variables)",
@@ -149,18 +152,18 @@ COMFYUI_LORA_LABELS = {
 COMFYUI_LORAS_BY_MODEL = {
     "qwen": ("none", "lightning", "qwen_snofs", "multiangle", "multiangle_batch", "multipose_batch"),
     "krea2": (
-        "none", "krea_nsfw", "krea_snapshot", "krea_both", "krea_snofs",
+        "none", "krea_nsfw", "krea_snapshot", "krea_both", "krea_reddit", "krea_snofs",
         "krea_edit", "krea_edit_nsfw", "krea_edit_snapshot", "krea_edit_both",
     ),
     "krea2_raw": (
-        "none", "krea_nsfw", "krea_snapshot", "krea_both", "krea_snofs",
+        "none", "krea_nsfw", "krea_snapshot", "krea_both", "krea_reddit", "krea_snofs",
         "krea_edit", "krea_edit_nsfw", "krea_edit_snapshot", "krea_edit_both",
     ),
     "krea2_moody": (
-        "none", "krea_nsfw", "krea_snapshot", "krea_both", "krea_snofs",
+        "none", "krea_nsfw", "krea_snapshot", "krea_both", "krea_reddit", "krea_snofs",
         "krea_edit", "krea_edit_nsfw", "krea_edit_snapshot", "krea_edit_both",
     ),
-    "wan_i2v": ("none", "lightx2v"),
+    "wan_i2v": ("none", "lightx2v", "dr34ml4y"),
     "minimax_i2v": ("none",),
 }
 
@@ -171,6 +174,8 @@ def _comfyui_lora_label(model: str, key: str) -> str:
             return "Full (calidad, 40 pasos)"
         if key == "lightx2v":
             return "Rápido (lightx2v, 4×)"
+        if key == "dr34ml4y":
+            return "DR34ML4Y (posiciones NSFW, 24 pasos)"
     return COMFYUI_LORA_LABELS.get(key, key)
 
 

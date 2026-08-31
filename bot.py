@@ -329,6 +329,7 @@ COMFYUI_CAPTION_LORA_LABELS = {
     "krea_nsfw": "NSFW V4",
     "krea_snapshot": "Realistic Snapshot",
     "krea_both": "NSFW V4 + Realistic Snapshot",
+    "krea_reddit": "Reddit (textura + phone)",
     "krea_snofs": "SNOFS v1.3D",
     "qwen_snofs": "SNOFS v1.3",
     "krea_edit": "✏️ Editar (Identity)",
@@ -336,6 +337,7 @@ COMFYUI_CAPTION_LORA_LABELS = {
     "krea_edit_snapshot": "✏️ Editar + Snapshot",
     "krea_edit_both": "✏️ Editar + NSFW + Snapshot",
     "lightx2v": "lightx2v (rápido)",
+    "dr34ml4y": "DR34ML4Y (All-In-One NSFW)",
 }
 
 
