@@ -104,6 +104,58 @@ def test_build_prompt_fallback_on_attribute_error(variables_file):
     assert prompt == "a, b"
 
 
+# --- build_prompt_inline: /var inline fields injected into the template ---
+def test_build_prompt_inline_fills_placeholders_positionally(variables_file):
+    assert variables_store.build_prompt_inline(["de pie", "frontal"]) == "de pie, frontal"
+
+
+def test_build_prompt_inline_single_field_goes_to_first_placeholder(variables_file):
+    """A single value without commas lands on the first placeholder; the empty
+    one is dropped together with its separator."""
+    assert variables_store.build_prompt_inline(["de pie"]) == "de pie"
+
+
+def test_build_prompt_inline_blank_fields_dropped(variables_file):
+    assert variables_store.build_prompt_inline(["de pie", ""]) == "de pie"
+    assert variables_store.build_prompt_inline(["", "frontal"]) == "frontal"
+
+
+def test_build_prompt_inline_extra_fields_ignored(variables_file):
+    assert variables_store.build_prompt_inline(["de pie", "frontal", "extra"]) == "de pie, frontal"
+
+
+def test_build_prompt_inline_custom_template(variables_file):
+    variables_store.set_template("Pose: {pose} | Ángulo: {angle}")
+    assert (
+        variables_store.build_prompt_inline(["de pie", "frontal"])
+        == "Pose: de pie | Ángulo: frontal"
+    )
+
+
+def test_build_prompt_inline_single_placeholder_template(variables_file):
+    variables_store.set_template("una mujer {pose}")
+    assert variables_store.build_prompt_inline(["de pie"]) == "una mujer de pie"
+    # Extra fields beyond the placeholders are ignored.
+    assert variables_store.build_prompt_inline(["de pie", "frontal"]) == "una mujer de pie"
+
+
+def test_build_prompt_inline_reversed_template_order(variables_file):
+    """The first field always fills the FIRST placeholder in the template."""
+    variables_store.set_template("{angle}, {pose}")
+    assert variables_store.build_prompt_inline(["lateral"]) == "lateral"
+
+
+def test_build_prompt_inline_template_without_placeholders_joins(variables_file):
+    variables_store.set_template("foto fija")
+    assert variables_store.build_prompt_inline(["de pie", "frontal"]) == "de pie, frontal"
+    assert variables_store.build_prompt_inline(["de pie"]) == "de pie"
+
+
+def test_build_prompt_inline_fallback_on_format_expr(variables_file):
+    variables_store.set_template("{pose.foo}")
+    assert variables_store.build_prompt_inline(["de pie"]) == "de pie"
+
+
 JSON_TEMPLATE = (
     '{\n'
     '  "subject": "2B",\n'

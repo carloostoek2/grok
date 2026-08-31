@@ -41,6 +41,17 @@ Use `/config` (or `/video`) to change the model (`grok-imagine-video` base or `g
 
 The lists and the prompt template are managed with `/listas` (Telegram admin panel, private chats only): add / edit / delete items per list and customize the template with the `{pose}`, `{angle}`, `{action}` placeholders. Lists persist in `variables_lists.json`.
 
+### Inline prompt with /var
+
+`/var <texto>` is the inline alternative to `/variables`: instead of drawing random values from the JSON lists, the text written after the command is injected into the configured template (see `/listas`). Comma-separated fields fill the placeholders positionally — with the default template `{pose}, {angle}`, `/var de pie, frontal` renders the prompt `de pie, frontal`. A single value without commas lands on the first placeholder (`/var de pie` → `de pie`), and placeholders left empty are dropped together with their separator.
+
+Like `/variables`, an optional leading count sets how many images to generate (clamped to 1–10), all with the **same** rendered prompt: `/var 5 de pie, frontal` generates 5 images of `de pie, frontal` (the first token is only treated as a count when it is an integer in 1–10 followed by more text, so `/var 15 personas` stays a single image of `15 personas`). It uses the same routing and output paths as `/variables`:
+
+- Send `/var <texto>` (or `/var N <texto>`) as a plain text message to generate image(s) with that prompt (text-to-image).
+- Send a photo with caption `/var <texto>`, or reply to a photo with `/var <texto>`, to edit the image with that prompt.
+
+The generation is cancellable with the inline Cancel button, failed items are skipped while the rest still run, and it rejects the same non-image models as `/variables` (video, Face Swap).
+
 ## ComfyUI image editing (refine confirmation)
 
 When the configured ComfyUI model has refine enabled (default), each generated image goes through a 2-stage flow: the **base** is sent first with `[✨ Refinar][⏭ Continuar]` buttons.

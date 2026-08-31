@@ -249,6 +249,42 @@ def build_prompt(pose: str, angle: str) -> str:
     return _PLACEHOLDER_RE.sub(lambda m: values[m.group(1)], template)
 
 
+def build_prompt_inline(fields: list[str]) -> str:
+    """Render the configured template with inline /var fields.
+
+    The fields fill the template placeholders positionally, in order of
+    appearance (first field → first placeholder). A single field without commas
+    therefore lands on the first placeholder. Placeholders without a matching
+    field render empty and the leftover separator artifacts are cleaned up
+    (", ," collapses, leading/trailing ", " is trimmed), so "/var de pie" with
+    the default "{pose}, {angle}" template renders "de pie". Fields beyond the
+    placeholder count are ignored. When the template has no placeholders the
+    fields are joined with ", ".
+    """
+    clean = [f.strip() for f in fields if isinstance(f, str) and f.strip()]
+    template = get_template()
+    names = _PLACEHOLDER_RE.findall(template)
+    if not names or _FORMAT_EXPR_RE.search(template):
+        return ", ".join(clean)
+    values = {name: "" for name in names}
+    for i, name in enumerate(names):
+        if i < len(clean):
+            values[name] = clean[i]
+    rendered = _PLACEHOLDER_RE.sub(lambda m: values[m.group(1)], template)
+    return _clean_placeholder_gaps(rendered)
+
+
+def _clean_placeholder_gaps(text: str) -> str:
+    """Collapse separator artifacts left by placeholders that rendered empty."""
+    prev = None
+    while prev != text:
+        prev = text
+        text = re.sub(r",\s*,", ",", text)
+    text = re.sub(r",\s*$", "", text)
+    text = re.sub(r"^\s*,\s*", "", text)
+    return text.strip()
+
+
 def template_fields(template: str | None = None) -> list[str]:
     """Placeholder field names in the template, in order of appearance."""
     tpl = template if template is not None else get_template()

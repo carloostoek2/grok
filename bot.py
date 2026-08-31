@@ -2062,7 +2062,9 @@ async def cmd_variables_help(message: types.Message):
         f"para generar N ediciones (N = 1-{VARIABLES_MAX}) combinando "
         "aleatoriamente poses, ángulos y acciones.\n"
         "• Envía <b>/variables N</b> como mensaje de texto para generar N imágenes "
-        "directamente desde la combinación de listas.\n\n"
+        "directamente desde la combinación de listas.\n"
+        "• ¿Prefieres un texto fijo? Usa <b>/var texto</b> para inyectarlo "
+        "directamente en la plantilla, sin listas.\n\n"
         "Gestiona las listas con <b>/listas</b>.",
         parse_mode="HTML",
     )
@@ -2486,11 +2488,327 @@ async def cmd_variables_reply(message: types.Message) -> None:
 
 
 # ---------------------------------------------------------------------------
+# /var [N] <texto> — image generation with an inline prompt
+#
+# Like /variables, but the variable values are written directly in the chat:
+# the text after "/var" is injected into the configured template (see /listas),
+# filling its placeholders positionally (comma-separated fields; a single field
+# lands on the first placeholder) instead of drawing random values from the
+# JSON lists. An optional leading N (1-VARIABLES_MAX) sets how many images to
+# generate, all with the same rendered prompt. Works the same three ways:
+# photo caption, reply to a photo, or plain text message.
+# ---------------------------------------------------------------------------
+def _is_var_command(text: str | None) -> bool:
+    """True when a caption/reply text is a /var invocation.
+
+    Requires a word boundary after 'var' so '/variables …' is never hijacked
+    ('var' is a strict prefix of 'variables').
+    """
+    if not text:
+        return False
+    return re.match(r"^/var(?:@|(?:\s|$))", text.strip(), re.IGNORECASE) is not None
+
+
+def _parse_var_prompt(text: str | None) -> str | None:
+    """Extract the inline prompt from '/var <texto>' (or '/var@Bot <texto>').
+
+    Returns None when the text is not a /var invocation or carries no prompt.
+    """
+    if not text:
+        return None
+    m = re.match(
+        r"^/var(?:@[A-Za-z0-9_]+)?(?:\s+(.*))?$",
+        text.strip(),
+        re.IGNORECASE | re.DOTALL,
+    )
+    if not m or not m.group(1):
+        return None
+    prompt = m.group(1).strip()
+    return prompt or None
+
+
+def _parse_var_count_and_text(text: str | None) -> tuple[int, str | None]:
+    """Parse '/var [N] <texto>' → (count, prompt).
+
+    The first token after /var is the image count when it is an integer in
+    [1, VARIABLES_MAX] AND more text follows (same placement as /variables N);
+    otherwise the count is 1 and the whole remainder is the prompt. Numbers
+    out of range are treated as prompt text, so '/var 15 personas' stays a
+    single image of '15 personas' instead of being hijacked as a count.
+    """
+    prompt = _parse_var_prompt(text)
+    if prompt is None:
+        return 1, None
+    parts = prompt.split(maxsplit=1)
+    if len(parts) == 2 and parts[0].isdigit():
+        n = int(parts[0])
+        if 1 <= n <= VARIABLES_MAX:
+            return n, parts[1].strip()
+    return 1, prompt
+
+
+def _var_usage() -> str:
+    return (
+        "Para usar <b>/var</b>:\n"
+        "• Envía <b>/var texto</b> (o <b>/var N texto</b>, N = 1-"
+        f"{VARIABLES_MAX}) como mensaje para generar una imagen (o N) con ese "
+        "texto como prompt.\n"
+        "• Envía una foto con el caption <b>/var texto</b>, o responde a una foto "
+        "con <b>/var texto</b>, para editarla con ese texto.\n\n"
+        "El texto se inyecta en la <b>plantilla</b> configurada en <b>/listas</b>: "
+        "separa con comas los valores para cada placeholder (p. ej. con la "
+        "plantilla <code>{pose}, {angle}</code>, <b>/var de pie, frontal</b> "
+        "genera con «de pie, frontal»). Si escribes un solo valor, va al "
+        "primer placeholder. Con <b>N</b>, todas las imágenes usan el mismo prompt."
+    )
+
+
+@dp.message(Command("var"))
+async def cmd_var_help(message: types.Message):
+    """'/var <texto>' command.
+
+    aiogram's Command filter matches text or caption, and this handler is
+    registered before handle_photo_caption/handle_reply_edit, so it must
+    delegate photo captions and replies to the single-shot runners; bare text
+    with an inline prompt runs a text-to-image generation, otherwise it shows
+    usage.
+    """
+    if message.reply_to_message:
+        await cmd_var_reply(message)
+        return
+    if message.photo and not (
+        isinstance(message.media_group_id, str) and message.media_group_id
+    ):
+        await cmd_var_photo(message)
+        return
+    count, prompt = (
+        _parse_var_count_and_text(message.text)
+        if isinstance(message.text, str)
+        else (1, None)
+    )
+    if prompt is None:
+        await message.answer(_var_usage(), parse_mode="HTML")
+        return
+    prompt_err = _validate_prompt(prompt)
+    if prompt_err:
+        await message.answer(prompt_err)
+        return
+    await _run_var_batch(message, count, prompt, None, None, mode="text")
+
+
+async def cmd_var_photo(message: types.Message) -> None:
+    """Photo sent with a '/var [N] <texto>' caption → batch edit with inline prompt."""
+    count, prompt = _parse_var_count_and_text(message.caption)
+    if prompt is None:
+        await message.answer(
+            "Uso: envía la foto con el caption <b>/var [N] texto</b>.\n\n"
+            + _var_usage(),
+            parse_mode="HTML",
+        )
+        return
+    prompt_err = _validate_prompt(prompt)
+    if prompt_err:
+        await message.answer(prompt_err)
+        return
+    image_data = await _download_telegram_file_id(message.photo[-1].file_id)
+    await _run_var_batch(
+        message,
+        count,
+        prompt,
+        image_data,
+        None,
+        source_file_id=message.photo[-1].file_id,
+    )
+
+
+async def cmd_var_reply(message: types.Message) -> None:
+    """'/var [N] <texto>' sent as a reply to a photo → batch edit with inline prompt."""
+    count, prompt = _parse_var_count_and_text(message.text or message.caption)
+    if prompt is None:
+        await message.answer(
+            "Uso: responde a una foto con <b>/var [N] texto</b>.\n\n"
+            + _var_usage(),
+            parse_mode="HTML",
+        )
+        return
+    if not message.reply_to_message or not message.reply_to_message.photo:
+        await message.answer("Responde a una foto para editarla con /var.")
+        return
+    prompt_err = _validate_prompt(prompt)
+    if prompt_err:
+        await message.answer(prompt_err)
+        return
+    kie_source_ref = None
+    image_data = None
+    source_file_id = None
+    if get_model(message.from_user.id).get("provider") == "kie":
+        kie_source_ref = _resolve_reply_kie_ref(message.reply_to_message)
+    if kie_source_ref is None:
+        image_data = await _download_telegram_photo(message.reply_to_message.photo[-1])
+        source_file_id = message.reply_to_message.photo[-1].file_id
+    await _run_var_batch(
+        message,
+        count,
+        prompt,
+        image_data,
+        kie_source_ref,
+        source_file_id=source_file_id,
+    )
+
+
+async def _run_var_batch(
+    message: types.Message,
+    count: int,
+    prompt: str,
+    image_data: BytesIO | None,
+    kie_source_ref: dict | None,
+    *,
+    source_file_id: str | None = None,
+    mode: str = "edit",
+) -> None:
+    """Run `count` images from the inline /var prompt.
+
+    The inline text is injected into the configured template once (every image
+    uses the same rendered prompt); mode="edit" reuses the same source image
+    (never chaining), mode="text" generates from the prompt with no base image.
+    Iterations run sequentially, are cancellable, and a failed item is skipped
+    while the rest still run — the same structure as /variables.
+    """
+    uid = message.from_user.id
+    model, reject_msg = _variables_model_or_reject(uid)
+    if reject_msg:
+        await message.answer(reject_msg)
+        return
+    assert model is not None  # reject_msg None → modelo válido
+    # The final prompt = template with the inline fields injected.
+    final_prompt = variables_store.build_prompt_inline(prompt.split(","))
+    use_comfyui = model.get("provider") == "comfyui"
+    is_text = mode == "text"
+    verb = "generando" if is_text else "editando"
+    fail_label = "Generación" if is_text else "Edición"
+
+    cancel_event = _start_job(uid, "var")
+    if cancel_event is None:
+        await message.answer(_JOBS_FULL_MSG)
+        return
+    status_msg = None
+    completed = 0
+    failed = 0
+    try:
+        status_msg = await message.answer(
+            f"🎲 <b>Var</b>: {verb} 0/{count} imágenes con {model['name']}...",
+            parse_mode="HTML",
+            reply_markup=_cancel_job_keyboard(cancel_event),
+        )
+        for i in range(1, count + 1):
+            if _job_cancelled(cancel_event):
+                await status_msg.edit_text(
+                    f"⏹ Cancelado. Completadas {completed}/{count} imágenes.",
+                    reply_markup=None,
+                )
+                return
+            status_label = (
+                f"🎲 <b>Var</b>: {verb} {i}/{count} imágenes con {model['name']}..."
+            )
+            await status_msg.edit_text(
+                status_label,
+                parse_mode="HTML",
+                reply_markup=_cancel_job_keyboard(cancel_event),
+            )
+            if image_data is not None:
+                image_data.seek(0)
+            kie_ref = kie_source_ref if model.get("provider") == "kie" else None
+
+            try:
+                output, err, meta = await generate_image(
+                    model,
+                    final_prompt,
+                    image_data,
+                    kie_source_ref=kie_ref,
+                    status_msg=status_msg,
+                    status_label=status_label,
+                    status_parse_mode="HTML",
+                )
+                if _job_cancelled(cancel_event):
+                    await status_msg.edit_text(
+                        f"⏹ Cancelado. Completadas {completed}/{count} imágenes.",
+                        reply_markup=None,
+                    )
+                    return
+                if err:
+                    failed += 1
+                    await _notify_variables_failure(
+                        message, i, count, final_prompt, label=fail_label
+                    )
+                    continue
+                regen_context = _build_image_regen_context(
+                    model=model,
+                    user_id=uid,
+                    prompt=final_prompt,
+                    mode="text" if is_text else "edit",
+                    source_file_id=None if is_text else source_file_id,
+                    kie_source_ref=kie_ref,
+                )
+                if use_comfyui:
+                    await _send_comfyui_output(
+                        model,
+                        output,
+                        final_prompt,
+                        status_msg,
+                        message,
+                        f"Var {i}/{count}",
+                        regen_context,
+                        delete_status=False,
+                        meta=meta,
+                        cancel_event=cancel_event,
+                        caption_prompt=True,
+                    )
+                else:
+                    await process_image_result(
+                        output,
+                        final_prompt,
+                        status_msg,
+                        message,
+                        f"Var {i}/{count}",
+                        download_allowlist=_download_allowlist_for_provider(model.get("provider")),
+                        kie_meta=meta,
+                        regen_context=regen_context,
+                        delete_status=False,
+                        model=model,
+                        caption_prompt=True,
+                    )
+            except Exception:
+                failed += 1
+                await _notify_variables_failure(
+                    message, i, count, final_prompt, label=fail_label
+                )
+                continue
+            completed += 1
+
+        await status_msg.edit_text(
+            _variables_batch_summary(completed, failed, count),
+            reply_markup=None,
+        )
+    except Exception as e:
+        if status_msg:
+            await status_msg.edit_text(f"Error inesperado: {e}", reply_markup=None)
+        else:
+            await message.answer(f"Error inesperado: {e}")
+    finally:
+        _finish_job(uid, cancel_event)
+
+
+# ---------------------------------------------------------------------------
 # PHOTO + CAPTION  — route by model
 # ---------------------------------------------------------------------------
 @dp.message(lambda m: m.photo and m.caption and not m.media_group_id)
 async def handle_photo_caption(message: types.Message):
     if isinstance(message.media_group_id, str) and message.media_group_id:
+        return
+
+    # --- /var: photo + '/var texto' caption → single edit with inline prompt ---
+    if _is_var_command(message.caption):
+        await cmd_var_photo(message)
         return
 
     # --- variables: photo + '/variables N' caption → random combo batch edit ---
@@ -2589,6 +2907,11 @@ async def handle_reply_edit(message: types.Message):
         return
 
     state = get_user_state(message.from_user.id)
+
+    # --- /var: '/var texto' replied to a photo → single edit with inline prompt ---
+    if _is_var_command(message.text):
+        await cmd_var_reply(message)
+        return
 
     # --- variables: '/variables N' replied to a photo → random combo batch ---
     if _is_variables_command(message.text):
