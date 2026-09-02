@@ -314,6 +314,7 @@ def _validate_prompt(prompt: str, *, max_len: int = TELEGRAM_MAX_TEXT_LEN) -> st
 
 COMFYUI_CAPTION_MODEL_LABELS = {
     "qwen": "Qwen-Image-Edit 2511",
+    "qwen_aio": "Qwen AIO v23 (Rápido)",
     "krea2": "Krea 2",
     "krea2_raw": "Krea 2 RAW",
     "krea2_moody": "Moody (Krea 2 Mix)",
@@ -2282,6 +2283,11 @@ async def _run_variables_batch(
         )
         return
 
+    # Modo Qwen AIO (edición nativa): el prompt es una INSTRUCCIÓN directa
+    # (Qwen-Edit no usa el template JSON rico de Krea). Construida desde las
+    # listas de variables (pose + ángulo) + fidelidad + skin de la LoRA.
+    use_qwen_aio = use_comfyui and model.get("comfyui_model") == "qwen_aio"
+
     lists = variables_store.get_lists()
     for name in variables_store.LIST_NAMES:
         if not lists[name]:
@@ -2331,6 +2337,17 @@ async def _run_variables_batch(
             prompt, combo_tuple = combo
             last_prompt = prompt
             used_combos.add(combo_tuple)
+
+            # Qwen AIO: instrucción directa de edición (no el template JSON rico).
+            # Qwen-Edit responde a verbos de edición + fidelidad; el skin prompt
+            # activa la LoRA qwen-edit-skin. Sin ángulos extremos (cámara fija).
+            if use_qwen_aio:
+                pose, angle = combo_tuple[0], combo_tuple[1]
+                prompt = (
+                    f"she is {pose}, {angle}, same person, same outfit, same room, "
+                    "make the subjects skin details more prominent and natural"
+                )
+                last_prompt = prompt
 
             if image_data is not None:
                 image_data.seek(0)
@@ -3962,6 +3979,11 @@ async def _generate_comfyui(
                     "El modo Multi-pose necesita una foto de entrada:\n"
                     "envía la foto con /variables (o responde a una foto)."
                 ), None
+            if cm == "qwen_aio":
+                return None, (
+                    "El modo Qwen AIO (edición nativa) necesita una foto de entrada:\n"
+                    "envía la foto con /variables (o responde a una foto)."
+                ), None
             cmd = f"MODEL='{cm}' LORA='{cl}' python3 /workspace/gen_comfy.py"
             remotes, _rc = await _comfyui_run_remote(cmd, prompt, timeout=run_timeout)
         else:
@@ -4178,6 +4200,7 @@ async def _send_comfyui_output(
         )
     if (
         model.get("comfyui_refine") == "1"
+        and model.get("comfyui_model") != "qwen_aio"
         and meta is not None
         and bool(meta.get("comfyui_remotes"))
     ):
