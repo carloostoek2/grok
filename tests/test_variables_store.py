@@ -183,7 +183,7 @@ def test_build_prompt_renders_json_template(variables_file):
 def test_build_prompt_shuffled_renders_json_template(variables_file):
     variables_store.set_template(JSON_TEMPLATE)
     with patch("variables_store.random.shuffle", side_effect=lambda x: x.reverse()):
-        prompt = variables_store.build_prompt_shuffled("A", "B", "C")
+        prompt = variables_store.build_prompt_shuffled({"pose": "A", "angle": "B", "action": "C"})
     data = json.loads(prompt)
     assert data["pose"] == "B"
     assert data["camera"]["angle"] == "A"
@@ -206,7 +206,7 @@ def test_random_combination_uses_lists_and_template(variables_file):
         side_effect=["de pie", "lateral", "mirando"],
     ):
         prompt, combo = variables_store.random_combination()
-    assert combo == ("de pie", "lateral", "mirando")
+    assert combo == {"pose": "de pie", "angle": "lateral", "action": "mirando"}
     assert prompt == "de pie, lateral, mirando"
 
 
@@ -217,15 +217,16 @@ def test_random_combination_avoids_exclude(variables_file):
         side_effect=["de pie", "lateral", "mirando", "sentado", "cenital", "saludando"],
     ):
         prompt, combo = variables_store.random_combination(exclude=exclude)
-    assert combo == ("sentado", "cenital", "saludando")
-    assert combo not in exclude
+    assert combo == {"pose": "sentado", "angle": "cenital", "action": "saludando"}
+    assert variables_store.combo_key(combo) not in exclude
     assert "sentado" in prompt
 
 
 def test_random_combination_returns_none_on_empty_list(variables_file):
-    # empty the poses list entirely
-    while variables_store.delete_item("poses", 0):
-        pass
+    # empty every list in the active file
+    for name in list(variables_store.get_lists()):
+        while variables_store.delete_item(name, 0):
+            pass
     assert variables_store.random_combination() is None
 
 
@@ -240,23 +241,23 @@ def test_template_fields_tracks_custom_template(variables_file):
 
 def test_combo_key_tracks_only_template_fields(variables_file):
     variables_store.set_template("{pose} {angle}")
-    assert variables_store.combo_key("de pie", "de frente", "mirando") == ("de pie", "de frente")
+    assert variables_store.combo_key({"pose": "de pie", "angle": "de frente", "action": "mirando"}) == ("de pie", "de frente")
 
 
 def test_combo_key_default_template_keeps_both(variables_file):
-    assert variables_store.combo_key("a", "b", "c") == ("a", "b", "c")
+    assert variables_store.combo_key({"pose": "a", "angle": "b", "action": "c"}) == ("a", "b", "c")
 
 
 def test_build_prompt_shuffled_swaps_two_fields(variables_file):
     variables_store.set_template("{pose} {angle}")
     # With exactly two contributing fields the derangement is a guaranteed swap.
-    assert variables_store.build_prompt_shuffled("A", "B", "C") == "B A"
+    assert variables_store.build_prompt_shuffled({"pose": "A", "angle": "B", "action": "C"}) == "B A"
 
 
 def test_build_prompt_shuffled_preserves_values(variables_file):
     variables_store.set_template("{pose} {angle}")
     with patch("variables_store.random.shuffle", side_effect=lambda x: x.reverse()):
-        prompt = variables_store.build_prompt_shuffled("A", "B", "C")
+        prompt = variables_store.build_prompt_shuffled({"pose": "A", "angle": "B", "action": "C"})
     # Both values still render, just in a different order.
     assert set(prompt.split()) == {"A", "B"}
     assert prompt == "B A"
@@ -289,4 +290,4 @@ def test_random_combination_excludes_blacklist(variables_file):
         side_effect=["de pie", "lateral", "mirando", "sentado", "cenital", "saludando"],
     ):
         prompt, combo = variables_store.random_combination()
-    assert combo == ("sentado", "cenital", "saludando")
+    assert combo == {"pose": "sentado", "angle": "cenital", "action": "saludando"}

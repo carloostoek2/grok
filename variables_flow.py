@@ -174,9 +174,9 @@ def _menu_text() -> str:
         "Se usan en <b>/variables N</b> para editar imágenes combinando "
         "una opción aleatoria de cada lista.\n",
     ]
-    for name in variables_store.LIST_NAMES:
-        count = len(lists[name])
-        label = LIST_LABELS[name]
+    for name, items in lists.items():
+        count = len(items)
+        label = LIST_LABELS.get(name, name)
         lines.append(f"• <b>{label}</b>: {count} opcione{'s' if count != 1 else 'n'}")
     template = variables_store.get_template()
     lines.append(f"\n<b>Plantilla:</b> <code>{_esc(_truncate(template, 80))}</code>")
@@ -190,9 +190,9 @@ def _menu_text() -> str:
 def _menu_keyboard() -> InlineKeyboardMarkup:
     lists = variables_store.get_lists()
     buttons = []
-    for name in variables_store.LIST_NAMES:
-        label = LIST_LABELS[name]
-        count = len(lists[name])
+    for name, items in lists.items():
+        label = LIST_LABELS.get(name, name)
+        count = len(items)
         buttons.append([
             InlineKeyboardButton(
                 text=f"{label} ({count})",
@@ -209,7 +209,7 @@ def _menu_keyboard() -> InlineKeyboardMarkup:
 
 def _list_text(name: str) -> str:
     items = variables_store.get_list(name)
-    label = LIST_LABELS[name]
+    label = LIST_LABELS.get(name, name)
     lines = [f"<b>📌 {label}</b> — {len(items)} opcione{'s' if len(items) != 1 else 'n'}\n"]
     if not items:
         lines.append("<i>La lista está vacía.</i>")

@@ -115,15 +115,20 @@ def _normalize_items(raw) -> list[str]:
 
 
 def _ensure_full(data: dict) -> bool:
-    """Ensure all lists + template exist with defaults. Returns True if saved."""
+    """Ensure a loadable structure. Returns True if saved.
+
+    Default lists are seeded ONLY when the file has no lists at all; a package
+    with its own fields (e.g. bodies/hands/angles) is never polluted with the
+    system defaults.
+    """
     changed = False
     if not isinstance(data.get("lists"), dict):
         data["lists"] = {}
         changed = True
-    for name in LIST_NAMES:
-        if name not in data["lists"] or not isinstance(data["lists"].get(name), list):
+    if not data["lists"]:
+        for name in LIST_NAMES:
             data["lists"][name] = list(DEFAULT_LISTS[name])
-            changed = True
+        changed = True
     if not isinstance(data.get("template"), str) or not data["template"].strip():
         data["template"] = DEFAULT_TEMPLATE
         changed = True
@@ -143,16 +148,23 @@ def _data() -> dict:
 
 
 def is_valid_list_name(name: str) -> bool:
-    return name in LIST_NAMES
+    if name in LIST_NAMES:
+        return True
+    return name in get_lists()
 
 
 def get_lists() -> dict[str, list[str]]:
-    """Return the three editable lists as {name: [items]}."""
+    """Return every list stored in the active file as {name: [items]}.
+
+    The active file is self-describing: whichever fields it carries (poses/
+    angles/actions for the legacy model, or package fields like bodies/hands/
+    angles) are the ones the system combines.
+    """
     data = _data()
     lists = data.get("lists", {})
     return {
-        name: _normalize_items(lists.get(name, []))
-        for name in LIST_NAMES
+        name: _normalize_items(items)
+        for name, items in lists.items()
     }
 
 
@@ -244,18 +256,26 @@ def _needs_fallback(template: str, values: dict[str, str]) -> bool:
     return any(f not in values for f in _PLACEHOLDER_RE.findall(template))
 
 
-def build_prompt(pose: str, angle: str, action: str) -> str:
-    """Fill the configured template with the three selected items.
+def build_prompt_values(values: dict[str, str]) -> str:
+    """Fill the template with ``{field}`` values, whatever fields they are.
 
     Placeholders are replaced by regex instead of ``str.format``, so templates
     that contain literal braces — e.g. a JSON-structured prompt — render intact.
+    Falls back to a plain join when the template references a field with no
+    value (or a format expression).
     """
     template = get_template()
-    values = {"pose": pose, "angle": angle, "action": action}
-    if _needs_fallback(template, values):
-        # Fall back to a plain join when the template references unknown fields.
-        return f"{pose}, {angle}, {action}"
+    if _FORMAT_EXPR_RE.search(template):
+        return ", ".join(values.values())
+    placeholders = _PLACEHOLDER_RE.findall(template)
+    if any(f not in values for f in placeholders):
+        return ", ".join(values.values())
     return _PLACEHOLDER_RE.sub(lambda m: values[m.group(1)], template)
+
+
+def build_prompt(pose: str, angle: str, action: str) -> str:
+    """Fill the configured template with the three legacy fields."""
+    return build_prompt_values({"pose": pose, "angle": angle, "action": action})
 
 
 def build_prompt_inline(fields: list[str]) -> str:
@@ -300,14 +320,12 @@ def template_fields(template: str | None = None) -> list[str]:
     return _PLACEHOLDER_RE.findall(tpl)
 
 
-def combo_key(pose: str, angle: str, action: str) -> tuple:
+def combo_key(values: dict[str, str]) -> tuple:
     """Ordered tuple of the values that actually render into the prompt.
 
     Only the fields the template references contribute, so the key identifies the
-    combination by its prompt content (e.g. ``(pose, angle)`` when the template
-    drops ``{action}``), independent of the other lists.
+    combination by its prompt content, independent of the other lists.
     """
-    values = {"pose": pose, "angle": angle, "action": action}
     return tuple(values.get(f, "") for f in template_fields())
 
 
@@ -319,15 +337,14 @@ def _render_positional(template: str, values: list[str]) -> str:
     return _PLACEHOLDER_RE.sub(lambda _m: next(it, ""), template)
 
 
-def build_prompt_shuffled(pose: str, angle: str, action: str) -> str:
+def build_prompt_shuffled(values: dict[str, str]) -> str:
     """Render the template with the contributing values in a different order.
 
     Guarantees a derangement (order differs from the canonical template order) when
-    two or more fields contribute; with three fields the shuffle must avoid the
-    canonical order (reversed as a last resort).
+    two or more fields contribute; with two fields this is a plain swap.
     """
-    values = {"pose": pose, "angle": angle, "action": action}
     ordered = [values.get(f, "") for f in template_fields()]
+    ordered = [v for v in ordered if v]
     if len(ordered) >= 2:
         canonical = list(ordered)
         random.shuffle(ordered)
@@ -336,37 +353,73 @@ def build_prompt_shuffled(pose: str, angle: str, action: str) -> str:
     return _render_positional(get_template(), ordered)
 
 
-def random_combination(exclude: set[tuple[str, str, str]] | None = None) -> tuple[str, tuple[str, str, str]] | None:
-    """Pick a random (pose, angle, action) combo, avoiding `exclude` when possible.
+def _pluralize(word: str) -> str:
+    if word.endswith("y"):
+        return word[:-1] + "ies"
+    return word + "s"
 
-    Returns (prompt, combo) or None when any list is empty.
+
+def _list_for_placeholder(placeholder: str, lists: dict[str, list[str]]) -> str | None:
+    """Resolve a template placeholder to a stored list: exact match, regular
+    plural (``{body}`` → ``bodies``, ``{pose}`` → ``poses``), then prefix.
+    Returns None when no list provides the field."""
+    if placeholder in lists:
+        return placeholder
+    if _pluralize(placeholder) in lists:
+        return _pluralize(placeholder)
+    matches = [k for k in lists if k.startswith(placeholder)]
+    return min(matches, key=len) if matches else None
+
+
+def random_combination(exclude: set[tuple] | None = None) -> tuple[str, dict[str, str]] | None:
+    """Pick a random value for every template field from its list, avoiding `exclude`.
+
+    Returns (prompt, combo) where combo is ``{placeholder: value}`` (the fields
+    the template references), or None when no list provides a field. When the
+    template has no placeholders the combo keys are the list names.
     """
     lists = get_lists()
-    for name in LIST_NAMES:
-        if not lists[name]:
-            return None
+    usable = {name: items for name, items in lists.items() if items}
+    if not usable:
+        return None
+    template = get_template()
+    placeholders = [] if _FORMAT_EXPR_RE.search(template) else _PLACEHOLDER_RE.findall(template)
     exclude = exclude or set()
     blacklist = get_blacklist()
+
+    if placeholders:
+        field_map: dict[str, str] = {}
+        for p in placeholders:
+            lst = _list_for_placeholder(p, usable)
+            if lst is not None:
+                field_map[p] = lst
+        if not field_map:
+            return None
+        order = list(field_map)
+
+        def _draw() -> dict[str, str]:
+            return {p: random.choice(usable[field_map[p]]) for p in order}
+    else:
+        order = list(usable)
+
+        def _draw() -> dict[str, str]:
+            return {name: random.choice(usable[name]) for name in order}
+
     for _ in range(MAX_COMBO_ATTEMPTS):
-        combo = (
-            random.choice(lists["poses"]),
-            random.choice(lists["angles"]),
-            random.choice(lists["actions"]),
-        )
-        if combo not in exclude and combo_key(*combo) not in blacklist:
+        values = _draw()
+        key = combo_key(values)
+        if key not in exclude and key not in blacklist:
             break
     else:
-        combo = (
-            random.choice(lists["poses"]),
-            random.choice(lists["angles"]),
-            random.choice(lists["actions"]),
-        )
-    return build_prompt(*combo), combo
+        values = _draw()
+    if placeholders:
+        return build_prompt_values(values), values
+    return ", ".join(values.values()), values
 
 
-def combo_label(combo: tuple[str, str]) -> str:
+def combo_label(combo: dict[str, str]) -> str:
     """Short human-readable label for a combo (used in status/result text)."""
-    return ", ".join(combo)
+    return ", ".join(combo.values())
 
 
 def get_blacklist() -> set[tuple]:

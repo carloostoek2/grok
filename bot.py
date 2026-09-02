@@ -2162,10 +2162,11 @@ async def _run_multipose_batch(
         )
         return
     lists = variables_store.get_lists()
-    for name in variables_store.LIST_NAMES:
-        if not lists[name]:
+    for name, items in lists.items():
+        if not items:
+            label = variables_flow.LIST_LABELS.get(name, name)
             await message.answer(
-                f"La lista de <b>{variables_flow.LIST_LABELS[name]}</b> está vacía.\n"
+                f"La lista de <b>{label}</b> está vacía.\n"
                 "Usa <b>/listas</b> para añadir opciones antes de usar el modo Multi-pose.",
                 parse_mode="HTML",
             )
@@ -2181,9 +2182,9 @@ async def _run_multipose_batch(
             parse_mode="HTML",
             reply_markup=_cancel_job_keyboard(cancel_event),
         )
-        used_combos: set[tuple[str, str, str]] = set()
+        used_combos: set[tuple] = set()
         rama_prompts: list[str] = []
-        combos: list[tuple[str, str, str]] = []
+        combos: list[dict[str, str]] = []
         for _ in range(MULTIPOSE_BATCH_SIZE):
             combo = variables_store.random_combination(exclude=used_combos)
             if combo is None:
@@ -2193,7 +2194,7 @@ async def _run_multipose_batch(
                 )
                 return
             prompt, combo_tuple = combo
-            used_combos.add(combo_tuple)
+            used_combos.add(variables_store.combo_key(combo_tuple))
             combos.append(combo_tuple)
             # Cada rama del workflow multipose lleva el trigger <sks> + la frase
             # de pose/ángulo (mismo formato validado en el box).
@@ -2298,10 +2299,11 @@ async def _run_variables_batch(
     use_qwen_aio = use_comfyui and model.get("comfyui_model") == "qwen_aio"
 
     lists = variables_store.get_lists()
-    for name in variables_store.LIST_NAMES:
-        if not lists[name]:
+    for name, items in lists.items():
+        if not items:
+            label = variables_flow.LIST_LABELS.get(name, name)
             await message.answer(
-                f"La lista de <b>{variables_flow.LIST_LABELS[name]}</b> está vacía.\n"
+                f"La lista de <b>{label}</b> está vacía.\n"
                 "Usa <b>/listas</b> para añadir opciones antes de usar /variables.",
                 parse_mode="HTML",
             )
@@ -2312,7 +2314,7 @@ async def _run_variables_batch(
         await message.answer(_JOBS_FULL_MSG)
         return
     status_msg = None
-    used_combos: set[tuple[str, str, str]] = set()
+    used_combos: set[tuple] = set()
     completed = 0
     failed = 0
     try:
@@ -2345,15 +2347,18 @@ async def _run_variables_batch(
                 return
             prompt, combo_tuple = combo
             last_prompt = prompt
-            used_combos.add(combo_tuple)
+            used_combos.add(variables_store.combo_key(combo_tuple))
 
             # Qwen AIO: instrucción directa de edición (no el template JSON rico).
             # Qwen-Edit responde a verbos de edición + fidelidad; el skin prompt
             # activa la LoRA qwen-edit-skin. Sin ángulos extremos (cámara fija).
             if use_qwen_aio:
-                pose, angle = combo_tuple[0], combo_tuple[1]
+                pose = combo_tuple.get("pose", "")
+                angle = combo_tuple.get("angle", "")
+                action = combo_tuple.get("action", "")
+                extra = f", {action}" if action else ""
                 prompt = (
-                    f"she is {pose}, {angle}, same person, same outfit, same room, "
+                    f"she is {pose}, {angle}{extra}, same person, same room, "
                     "make the subjects skin details more prominent and natural"
                 )
                 last_prompt = prompt
@@ -2381,7 +2386,7 @@ async def _run_variables_batch(
                 if err and meta and meta.get("exhausted"):
                     if image_data is not None:
                         image_data.seek(0)
-                    shuffled_prompt = variables_store.build_prompt_shuffled(*combo_tuple)
+                    shuffled_prompt = variables_store.build_prompt_shuffled(combo_tuple)
                     last_prompt = shuffled_prompt
                     output, err, meta = await generate_image(
                         model,
@@ -2399,7 +2404,7 @@ async def _run_variables_batch(
                         )
                         return
                     if err and meta and meta.get("exhausted"):
-                        variables_store.blacklist_add(variables_store.combo_key(*combo_tuple))
+                        variables_store.blacklist_add(variables_store.combo_key(combo_tuple))
                         failed += 1
                         await _notify_variables_failure(message, i, count, last_prompt, label=fail_label)
                         continue
