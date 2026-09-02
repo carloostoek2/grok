@@ -9,10 +9,12 @@ sessions.json.
 Prompt template placeholders:
     {pose}    — a random item from the "poses" list
     {angle}   — a random item from the "angles" list
+    {action}  — a random item from the "actions" list
 
-Decisión de la dueña (2026-08-20): solo DOS campos — pose y ángulo. En foto,
-acción y pose se pisan (una pose puede ser una acción y contradecir la acción
-de la lista), así que la lista "actions" se eliminó del sistema.
+Decisión (2026-08-20): la lista "actions" se eliminó (pose y acción se pisaban
+en foto). Decisión revertida (2026-09-01) por la dueña: el campo se recupera
+con su nombre original y ahora se usa como outfit (y ocasionalmente acción
+extra), administrado desde el panel /listas.
 """
 
 from __future__ import annotations
@@ -29,9 +31,9 @@ VARIABLES_FILE = Path(__file__).parent / "variables_lists.json"
 # but protects against interleaved admin edits / concurrent coroutines).
 _LOCK = threading.Lock()
 
-LIST_NAMES = ("poses", "angles")
+LIST_NAMES = ("poses", "angles", "actions")
 
-DEFAULT_TEMPLATE = "{pose}, {angle}"
+DEFAULT_TEMPLATE = "{pose}, {angle}, {action}"
 
 DEFAULT_LISTS: dict[str, list[str]] = {
     "poses": [
@@ -45,6 +47,13 @@ DEFAULT_LISTS: dict[str, list[str]] = {
         "dynamic mid-stride pose as if just stopping",
         "sitting on the steps with knees together",
         "kneeling on one knee with the sword resting across the thigh",
+    ],
+    "actions": [
+        "wearing a black combat dress with a high collar",
+        "wearing a flowing white gown with a side slit",
+        "dressed in a sleek futuristic bodysuit with glowing accents",
+        "wearing a casual oversized hoodie and ripped jeans",
+        "in a red evening dress with matching gloves",
     ],
     "angles": [
         "eye-level full body frontal",
@@ -63,8 +72,8 @@ DEFAULT_LISTS: dict[str, list[str]] = {
 # Maximum random draws when trying to avoid repeating a combination within a batch.
 MAX_COMBO_ATTEMPTS = 30
 
-# Positional index of each field within a (pose, angle) combo tuple.
-_FIELD_INDEX = {"pose": 0, "angle": 1}
+# Positional index of each field within a (pose, angle, action) combo tuple.
+_FIELD_INDEX = {"pose": 0, "angle": 1, "action": 2}
 
 # Matches named template placeholders like {pose}, {angle}, {action}.
 _PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
@@ -235,17 +244,17 @@ def _needs_fallback(template: str, values: dict[str, str]) -> bool:
     return any(f not in values for f in _PLACEHOLDER_RE.findall(template))
 
 
-def build_prompt(pose: str, angle: str) -> str:
-    """Fill the configured template with the two selected items.
+def build_prompt(pose: str, angle: str, action: str) -> str:
+    """Fill the configured template with the three selected items.
 
     Placeholders are replaced by regex instead of ``str.format``, so templates
     that contain literal braces — e.g. a JSON-structured prompt — render intact.
     """
     template = get_template()
-    values = {"pose": pose, "angle": angle}
+    values = {"pose": pose, "angle": angle, "action": action}
     if _needs_fallback(template, values):
         # Fall back to a plain join when the template references unknown fields.
-        return f"{pose}, {angle}"
+        return f"{pose}, {angle}, {action}"
     return _PLACEHOLDER_RE.sub(lambda m: values[m.group(1)], template)
 
 
@@ -257,7 +266,7 @@ def build_prompt_inline(fields: list[str]) -> str:
     therefore lands on the first placeholder. Placeholders without a matching
     field render empty and the leftover separator artifacts are cleaned up
     (", ," collapses, leading/trailing ", " is trimmed), so "/var de pie" with
-    the default "{pose}, {angle}" template renders "de pie". Fields beyond the
+    the default "{pose}, {angle}, {action}" template renders "de pie". Fields beyond the
     placeholder count are ignored. When the template has no placeholders the
     fields are joined with ", ".
     """
@@ -291,14 +300,14 @@ def template_fields(template: str | None = None) -> list[str]:
     return _PLACEHOLDER_RE.findall(tpl)
 
 
-def combo_key(pose: str, angle: str) -> tuple:
+def combo_key(pose: str, angle: str, action: str) -> tuple:
     """Ordered tuple of the values that actually render into the prompt.
 
     Only the fields the template references contribute, so the key identifies the
     combination by its prompt content (e.g. ``(pose, angle)`` when the template
-    drops one field), independent of the other lists.
+    drops ``{action}``), independent of the other lists.
     """
-    values = {"pose": pose, "angle": angle}
+    values = {"pose": pose, "angle": angle, "action": action}
     return tuple(values.get(f, "") for f in template_fields())
 
 
@@ -310,13 +319,14 @@ def _render_positional(template: str, values: list[str]) -> str:
     return _PLACEHOLDER_RE.sub(lambda _m: next(it, ""), template)
 
 
-def build_prompt_shuffled(pose: str, angle: str) -> str:
+def build_prompt_shuffled(pose: str, angle: str, action: str) -> str:
     """Render the template with the contributing values in a different order.
 
     Guarantees a derangement (order differs from the canonical template order) when
-    two or more fields contribute; with two fields this is a plain swap.
+    two or more fields contribute; with three fields the shuffle must avoid the
+    canonical order (reversed as a last resort).
     """
-    values = {"pose": pose, "angle": angle}
+    values = {"pose": pose, "angle": angle, "action": action}
     ordered = [values.get(f, "") for f in template_fields()]
     if len(ordered) >= 2:
         canonical = list(ordered)
@@ -326,8 +336,8 @@ def build_prompt_shuffled(pose: str, angle: str) -> str:
     return _render_positional(get_template(), ordered)
 
 
-def random_combination(exclude: set[tuple[str, str]] | None = None) -> tuple[str, tuple[str, str]] | None:
-    """Pick a random (pose, angle) combo, avoiding `exclude` when possible.
+def random_combination(exclude: set[tuple[str, str, str]] | None = None) -> tuple[str, tuple[str, str, str]] | None:
+    """Pick a random (pose, angle, action) combo, avoiding `exclude` when possible.
 
     Returns (prompt, combo) or None when any list is empty.
     """
@@ -341,6 +351,7 @@ def random_combination(exclude: set[tuple[str, str]] | None = None) -> tuple[str
         combo = (
             random.choice(lists["poses"]),
             random.choice(lists["angles"]),
+            random.choice(lists["actions"]),
         )
         if combo not in exclude and combo_key(*combo) not in blacklist:
             break
@@ -348,6 +359,7 @@ def random_combination(exclude: set[tuple[str, str]] | None = None) -> tuple[str
         combo = (
             random.choice(lists["poses"]),
             random.choice(lists["angles"]),
+            random.choice(lists["actions"]),
         )
     return build_prompt(*combo), combo
 
@@ -392,3 +404,123 @@ def blacklist_clear() -> None:
         _ensure_full(data)
         data["blacklist"] = []
         _save(data)
+
+
+# ---------------------------------------------------------------------------
+# Paquetes de poses: archivos JSON con nombre gestionados desde el panel /listas
+#
+# Cada paquete es un archivo en variables_packages/<slug>.json con la forma
+# normalizada {"lists": {campo: [items]}, "template": str}. "Activar" copia el
+# contenido del paquete al archivo activo variables_lists.json (y deja la marca
+# "_package" para saber cuál está activo). El runtime solo lee el archivo activo,
+# así que el resto del sistema no cambia.
+# ---------------------------------------------------------------------------
+PACKAGES_DIR = Path(__file__).parent / "variables_packages"
+_ACTIVE_PACKAGE_KEY = "_package"
+
+
+def _slugify(name: str) -> str:
+    """Normalize a package name into a filesystem/callback-safe slug."""
+    slug = re.sub(r"\W+", "_", name.strip().lower()).strip("_")
+    return slug
+
+
+def list_packages() -> dict[str, Path]:
+    """Available packages as {slug: path}, sorted alphabetically."""
+    if not PACKAGES_DIR.exists():
+        return {}
+    out = {}
+    for path in sorted(PACKAGES_DIR.glob("*.json")):
+        out[path.stem] = path
+    return out
+
+
+def active_package_name() -> str | None:
+    """Slug of the active package, or None when the file is hand-edited."""
+    name = _data().get(_ACTIVE_PACKAGE_KEY)
+    return name if isinstance(name, str) and name else None
+
+
+def _normalize_package_payload(raw) -> tuple[dict | None, str | None]:
+    """Validate and normalize a raw package payload into
+    {"lists": {...}, "template": str}. Accepts both the ``lists`` and the
+    ``fields`` top-level key. Returns (payload, None) or (None, error)."""
+    if not isinstance(raw, dict):
+        return None, "El paquete debe ser un objeto JSON."
+    raw_lists = raw.get("lists") if isinstance(raw.get("lists"), dict) else None
+    if raw_lists is None and isinstance(raw.get("fields"), dict):
+        raw_lists = raw["fields"]
+    if not raw_lists:
+        return None, "Falta 'lists' (o 'fields') con al menos un campo."
+    lists: dict[str, list[str]] = {}
+    for field, items in raw_lists.items():
+        normalized = _normalize_items(items)
+        if not normalized:
+            continue
+        lists[str(field)] = normalized
+    if not lists:
+        return None, "Ningún campo tiene elementos."
+    template = raw.get("template")
+    if not isinstance(template, str) or not template.strip():
+        return None, "Falta 'template' (texto del prompt)."
+    return {"lists": lists, "template": template.strip()}, None
+
+
+def save_package(name: str, payload: dict) -> tuple[bool, str | None]:
+    """Create (or overwrite) a package file. Returns (ok, None) or (False, error)."""
+    slug = _slugify(name)
+    if not slug:
+        return False, "El nombre del paquete no es válido."
+    normalized, err = _normalize_package_payload(payload)
+    if err:
+        return False, err
+    PACKAGES_DIR.mkdir(parents=True, exist_ok=True)
+    with _LOCK:
+        with open(PACKAGES_DIR / f"{slug}.json", "w") as f:
+            json.dump(normalized, f, indent=2, ensure_ascii=False)
+    return True, None
+
+
+def load_package(name: str) -> dict | None:
+    """Load a package's normalized content, or None when missing/invalid."""
+    slug = _slugify(name)
+    path = PACKAGES_DIR / f"{slug}.json"
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def package_exists(name: str) -> bool:
+    return (PACKAGES_DIR / f"{_slugify(name)}.json").exists()
+
+
+def activate_package(name: str) -> bool:
+    """Copy a package's content into the active file, clearing the blacklist."""
+    payload = load_package(name)
+    if payload is None:
+        return False
+    slug = _slugify(name)
+    with _LOCK:
+        data = {
+            "lists": payload["lists"],
+            "template": payload["template"],
+            "blacklist": [],
+            _ACTIVE_PACKAGE_KEY: slug,
+        }
+        _save(data)
+    return True
+
+
+def delete_package(name: str) -> bool:
+    """Delete a package file. Returns False when missing or when it is active."""
+    slug = _slugify(name)
+    if not package_exists(slug):
+        return False
+    if active_package_name() == slug:
+        return False
+    (PACKAGES_DIR / f"{slug}.json").unlink()
+    return True

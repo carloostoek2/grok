@@ -10,7 +10,7 @@ import variables_store
 
 def test_default_lists_seeded_on_first_access(variables_file):
     lists = variables_store.get_lists()
-    assert set(lists) == {"poses", "angles"}
+    assert set(lists) == {"poses", "angles", "actions"}
     assert all(len(items) > 0 for items in lists.values())
 
 
@@ -70,7 +70,7 @@ def test_delete_item_removes(variables_file):
 
 
 def test_template_default_and_set(variables_file):
-    assert variables_store.get_template() == "{pose}, {angle}"
+    assert variables_store.get_template() == "{pose}, {angle}, {action}"
     assert variables_store.set_template("El sujeto está {pose} con {angle}")
     assert variables_store.get_template() == "El sujeto está {pose} con {angle}"
     assert variables_store.set_template("   ") is False
@@ -87,21 +87,21 @@ def test_set_template_has_no_length_limit(variables_file):
 
 def test_build_prompt_fills_placeholders(variables_file):
     assert (
-        variables_store.build_prompt("de pie", "frontal")
-        == "de pie, frontal"
+        variables_store.build_prompt("de pie", "frontal", "mirando")
+        == "de pie, frontal, mirando"
     )
 
 
 def test_build_prompt_fallback_on_unknown_placeholder(variables_file):
     variables_store.set_template("{unknown} {pose}")
-    prompt = variables_store.build_prompt("a", "b")
-    assert prompt == "a, b"
+    prompt = variables_store.build_prompt("a", "b", "c")
+    assert prompt == "a, b, c"
 
 
 def test_build_prompt_fallback_on_attribute_error(variables_file):
     variables_store.set_template("{pose.foo}")
-    prompt = variables_store.build_prompt("a", "b")
-    assert prompt == "a, b"
+    prompt = variables_store.build_prompt("a", "b", "c")
+    assert prompt == "a, b, c"
 
 
 # --- build_prompt_inline: /var inline fields injected into the template ---
@@ -121,7 +121,7 @@ def test_build_prompt_inline_blank_fields_dropped(variables_file):
 
 
 def test_build_prompt_inline_extra_fields_ignored(variables_file):
-    assert variables_store.build_prompt_inline(["de pie", "frontal", "extra"]) == "de pie, frontal"
+    assert variables_store.build_prompt_inline(["de pie", "frontal", "extra", "más"]) == "de pie, frontal, extra"
 
 
 def test_build_prompt_inline_custom_template(variables_file):
@@ -168,7 +168,7 @@ JSON_TEMPLATE = (
 
 def test_build_prompt_renders_json_template(variables_file):
     variables_store.set_template(JSON_TEMPLATE)
-    prompt = variables_store.build_prompt("de pie", "frontal")
+    prompt = variables_store.build_prompt("de pie", "frontal", "mirando")
     assert '"pose": "de pie"' in prompt
     assert '"camera": {"angle": "frontal"}' in prompt
     # Literal JSON braces survive the render (str.format used to choke on them).
@@ -183,7 +183,7 @@ def test_build_prompt_renders_json_template(variables_file):
 def test_build_prompt_shuffled_renders_json_template(variables_file):
     variables_store.set_template(JSON_TEMPLATE)
     with patch("variables_store.random.shuffle", side_effect=lambda x: x.reverse()):
-        prompt = variables_store.build_prompt_shuffled("A", "B")
+        prompt = variables_store.build_prompt_shuffled("A", "B", "C")
     data = json.loads(prompt)
     assert data["pose"] == "B"
     assert data["camera"]["angle"] == "A"
@@ -196,28 +196,28 @@ def test_template_fields_ignores_json_braces(variables_file):
 
 def test_build_prompt_json_template_single_field(variables_file):
     variables_store.set_template('{"subject": "2B", "pose": "{pose}"}')
-    prompt = variables_store.build_prompt("de pie", "frontal")
+    prompt = variables_store.build_prompt("de pie", "frontal", "mirando")
     assert json.loads(prompt)["pose"] == "de pie"
 
 
 def test_random_combination_uses_lists_and_template(variables_file):
     with patch(
         "variables_store.random.choice",
-        side_effect=["de pie", "lateral"],
+        side_effect=["de pie", "lateral", "mirando"],
     ):
         prompt, combo = variables_store.random_combination()
-    assert combo == ("de pie", "lateral")
-    assert prompt == "de pie, lateral"
+    assert combo == ("de pie", "lateral", "mirando")
+    assert prompt == "de pie, lateral, mirando"
 
 
 def test_random_combination_avoids_exclude(variables_file):
-    exclude = {("de pie", "lateral")}
+    exclude = {("de pie", "lateral", "mirando")}
     with patch(
         "variables_store.random.choice",
-        side_effect=["de pie", "lateral", "sentado", "cenital"],
+        side_effect=["de pie", "lateral", "mirando", "sentado", "cenital", "saludando"],
     ):
         prompt, combo = variables_store.random_combination(exclude=exclude)
-    assert combo == ("sentado", "cenital")
+    assert combo == ("sentado", "cenital", "saludando")
     assert combo not in exclude
     assert "sentado" in prompt
 
@@ -230,7 +230,7 @@ def test_random_combination_returns_none_on_empty_list(variables_file):
 
 
 def test_template_fields_returns_placeholder_names(variables_file):
-    assert variables_store.template_fields() == ["pose", "angle"]
+    assert variables_store.template_fields() == ["pose", "angle", "action"]
 
 
 def test_template_fields_tracks_custom_template(variables_file):
@@ -240,23 +240,23 @@ def test_template_fields_tracks_custom_template(variables_file):
 
 def test_combo_key_tracks_only_template_fields(variables_file):
     variables_store.set_template("{pose} {angle}")
-    assert variables_store.combo_key("de pie", "de frente") == ("de pie", "de frente")
+    assert variables_store.combo_key("de pie", "de frente", "mirando") == ("de pie", "de frente")
 
 
 def test_combo_key_default_template_keeps_both(variables_file):
-    assert variables_store.combo_key("a", "b") == ("a", "b")
+    assert variables_store.combo_key("a", "b", "c") == ("a", "b", "c")
 
 
 def test_build_prompt_shuffled_swaps_two_fields(variables_file):
     variables_store.set_template("{pose} {angle}")
     # With exactly two contributing fields the derangement is a guaranteed swap.
-    assert variables_store.build_prompt_shuffled("A", "B") == "B A"
+    assert variables_store.build_prompt_shuffled("A", "B", "C") == "B A"
 
 
 def test_build_prompt_shuffled_preserves_values(variables_file):
     variables_store.set_template("{pose} {angle}")
     with patch("variables_store.random.shuffle", side_effect=lambda x: x.reverse()):
-        prompt = variables_store.build_prompt_shuffled("A", "B")
+        prompt = variables_store.build_prompt_shuffled("A", "B", "C")
     # Both values still render, just in a different order.
     assert set(prompt.split()) == {"A", "B"}
     assert prompt == "B A"
@@ -283,10 +283,10 @@ def test_blacklist_clear_empties(variables_file):
 
 
 def test_random_combination_excludes_blacklist(variables_file):
-    variables_store.blacklist_add(("de pie", "lateral"))
+    variables_store.blacklist_add(("de pie", "lateral", "mirando"))
     with patch(
         "variables_store.random.choice",
-        side_effect=["de pie", "lateral", "sentado", "cenital"],
+        side_effect=["de pie", "lateral", "mirando", "sentado", "cenital", "saludando"],
     ):
         prompt, combo = variables_store.random_combination()
-    assert combo == ("sentado", "cenital")
+    assert combo == ("sentado", "cenital", "saludando")

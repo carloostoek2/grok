@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -80,13 +81,13 @@ async def test_cmd_listas_shows_menu(variables_file, mock_vars_safe_edit):
     text = msg.answer.call_args.args[0]
     assert "Poses" in text
     assert "Ángulos" in text
-    assert "Acciones" not in text
-    assert "{pose}, {angle}" in text
+    assert "Acciones" in text
+    assert "{pose}, {angle}, {action}" in text
     kb = msg.answer.call_args.kwargs["reply_markup"]
     callbacks = [btn.callback_data for row in kb.inline_keyboard for btn in row]
     assert "var:open:poses" in callbacks
     assert "var:open:angles" in callbacks
-    assert "var:open:actions" not in callbacks
+    assert "var:open:actions" in callbacks
 
 
 async def test_cmd_listas_first_tap_not_rejected(variables_file, mock_vars_safe_edit):
@@ -413,6 +414,111 @@ async def test_text_input_rejected_in_group(variables_file, mock_vars_safe_edit)
     await variables_flow.handle_add_text(msg, _make_state("add_item", vars_list="poses"))
     assert "chats privados" in msg.answer.call_args.args[0]
     assert "volando" not in variables_store.get_list("poses")
+
+
+# ---------------------------------------------------------------------------
+# Paquetes de poses
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def packages_dir(tmp_path, monkeypatch):
+    path = tmp_path / "variables_packages"
+    monkeypatch.setattr(variables_store, "PACKAGES_DIR", path)
+    return path
+
+
+def _valid_payload() -> dict:
+    return {
+        "lists": {
+            "poses": ["de pie", "sentado"],
+            "angles": ["frontal"],
+            "actions": ["elegante"],
+        },
+        "template": "{pose}, {angle}, {action}",
+    }
+
+
+async def test_packs_menu_shows_active_and_list(variables_file, packages_dir, mock_vars_safe_edit):
+    variables_store.save_package("2b_outfits", _valid_payload())
+    variables_store.activate_package("2b_outfits")
+    cb = _make_callback(data="var:packs")
+    await variables_flow.handle_var_packs(cb, _make_state())
+    text = mock_vars_safe_edit.call_args.args[1]
+    assert "Paquetes de variables" in text
+    assert "2b_outfits" in text
+    assert "Activo" in text
+    kb = mock_vars_safe_edit.call_args.kwargs["reply_markup"]
+    callbacks = [btn.callback_data for row in kb.inline_keyboard for btn in row]
+    assert "var:pack:view:2b_outfits" in callbacks
+    assert "var:pack:new" in callbacks
+
+
+async def test_pack_create_flow_end_to_end(variables_file, packages_dir, mock_vars_safe_edit):
+    """Crear paquete: nombre → JSON → guarda + activa + vuelve al menú."""
+    cb = _make_callback(data="var:pack:new")
+    await variables_flow.handle_pack_new(cb, _make_state())
+    assert "nombre" in mock_vars_safe_edit.call_args.args[1]
+
+    msg = _make_message(text="2B Outfits")
+    await variables_flow.handle_pack_name_text(msg, _make_state())
+    assert "JSON" in msg.answer.call_args.args[0]
+
+    msg2 = _make_message(text=json.dumps(_valid_payload()))
+    state = _make_state(
+        "pack_json",
+        pack_name="2B Outfits",
+        pack_slug="2b_outfits",
+        vars_message_id=5,
+        vars_chat_id=2001,
+    )
+    await variables_flow.handle_pack_json_text(msg2, state)
+    assert variables_store.package_exists("2b_outfits")
+    assert variables_store.active_package_name() == "2b_outfits"
+    # back to the main menu (fresh panel) + confirmation
+    texts = [c.args[0] for c in msg2.answer.await_args_list]
+    assert any("Listas de variables" in t for t in texts)
+    assert any("creado y activado" in t for t in texts)
+
+
+async def test_pack_create_rejects_invalid_json(variables_file, packages_dir, mock_vars_safe_edit):
+    msg = _make_message(text="{esto no es json")
+    state = _make_state("pack_json", pack_name="x", pack_slug="x", vars_message_id=5, vars_chat_id=2001)
+    await variables_flow.handle_pack_json_text(msg, state)
+    assert "JSON inválido" in msg.answer.call_args.args[0]
+    assert not variables_store.package_exists("x")
+
+
+async def test_pack_view_shows_fields_and_activate(variables_file, packages_dir, mock_vars_safe_edit):
+    variables_store.save_package("packsito", _valid_payload())
+    cb = _make_callback(data="var:pack:view:packsito")
+    await variables_flow.handle_pack_view(cb, _make_state())
+    text = mock_vars_safe_edit.call_args.args[1]
+    assert "packsito" in text
+    assert "Acciones" in text
+    kb = mock_vars_safe_edit.call_args.kwargs["reply_markup"]
+    callbacks = [btn.callback_data for row in kb.inline_keyboard for btn in row]
+    assert "var:pack:activate:packsito" in callbacks
+
+    cb2 = _make_callback(data="var:pack:activate:packsito")
+    await variables_flow.handle_pack_activate(cb2, _make_state())
+    assert variables_store.active_package_name() == "packsito"
+    assert "activado" in cb2.answer.call_args.args[0]
+
+
+async def test_pack_delete_non_active(variables_file, packages_dir, mock_vars_safe_edit):
+    variables_store.save_package("temporal", _valid_payload())
+    cb = _make_callback(data="var:pack:del:temporal")
+    await variables_flow.handle_pack_del(cb, _make_state())
+    assert not variables_store.package_exists("temporal")
+    assert "Eliminado" in cb.answer.call_args.args[0]
+
+
+async def test_pack_delete_active_rejected(variables_file, packages_dir, mock_vars_safe_edit):
+    variables_store.save_package("activo", _valid_payload())
+    variables_store.activate_package("activo")
+    cb = _make_callback(data="var:pack:del:activo")
+    await variables_flow.handle_pack_del(cb, _make_state())
+    assert variables_store.package_exists("activo")
+    assert "activo" in cb.answer.call_args.args[0]
 
 
 async def test_dispatcher_fsm_text_input_wins_over_generic_handlers(

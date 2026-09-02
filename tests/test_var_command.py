@@ -328,7 +328,7 @@ async def test_run_var_generates_once_with_template_rendered_prompt(sessions_fil
 
 
 async def test_run_var_single_field_lands_on_first_placeholder(sessions_file, variables_file):
-    """'/var de pie' with the default '{pose}, {angle}' template renders 'de pie'."""
+    """'/var de pie' with the default '{pose}, {angle}, {action}' template renders 'de pie'."""
     msg = _make_photo_message(caption="/var de pie")
     msg.answer.return_value = _make_status()
 

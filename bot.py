@@ -1009,11 +1009,20 @@ handle_var_cancel = variables_flow.handle_var_cancel
 handle_add_text = variables_flow.handle_add_text
 handle_edit_text = variables_flow.handle_edit_text
 handle_template_text = variables_flow.handle_template_text
+handle_var_packs = variables_flow.handle_var_packs
+handle_pack_view = variables_flow.handle_pack_view
+handle_pack_activate = variables_flow.handle_pack_activate
+handle_pack_del = variables_flow.handle_pack_del
+handle_pack_new = variables_flow.handle_pack_new
+handle_pack_name_text = variables_flow.handle_pack_name_text
+handle_pack_json_text = variables_flow.handle_pack_json_text
 
 _VAR_INPUT_HANDLERS = {
     variables_flow._state_key(variables_flow.VarStates.add_item): handle_add_text,
     variables_flow._state_key(variables_flow.VarStates.edit_text): handle_edit_text,
     variables_flow._state_key(variables_flow.VarStates.template): handle_template_text,
+    variables_flow._state_key(variables_flow.VarStates.pack_name): handle_pack_name_text,
+    variables_flow._state_key(variables_flow.VarStates.pack_json): handle_pack_json_text,
 }
 
 
@@ -2172,9 +2181,9 @@ async def _run_multipose_batch(
             parse_mode="HTML",
             reply_markup=_cancel_job_keyboard(cancel_event),
         )
-        used_combos: set[tuple[str, str]] = set()
+        used_combos: set[tuple[str, str, str]] = set()
         rama_prompts: list[str] = []
-        combos: list[tuple[str, str]] = []
+        combos: list[tuple[str, str, str]] = []
         for _ in range(MULTIPOSE_BATCH_SIZE):
             combo = variables_store.random_combination(exclude=used_combos)
             if combo is None:
@@ -2574,9 +2583,10 @@ def _var_usage() -> str:
         "con <b>/var texto</b>, para editarla con ese texto.\n\n"
         "El texto se inyecta en la <b>plantilla</b> configurada en <b>/listas</b>: "
         "separa con comas los valores para cada placeholder (p. ej. con la "
-        "plantilla <code>{pose}, {angle}</code>, <b>/var de pie, frontal</b> "
-        "genera con «de pie, frontal»). Si escribes un solo valor, va al "
-        "primer placeholder. Con <b>N</b>, todas las imágenes usan el mismo prompt."
+        "plantilla <code>{pose}, {angle}, {action}</code>, <b>/var de pie, "
+        "frontal, elegante</b> genera con «de pie, frontal, elegante»). Si "
+        "escribes un solo valor, va al primer placeholder. Con <b>N</b>, todas "
+        "las imágenes usan el mismo prompt."
     )
 
 

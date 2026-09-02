@@ -11,6 +11,8 @@ Flow:
     Editar               → pick an item, then type the replacement text
     Eliminar             → pick an item to remove
     Plantilla            → type the new template with {pose}/{angle}/{action}
+    Paquetes             → manage named pose-package files (view/activate/delete)
+    Crear paquete        → type a name, then paste the package JSON
 
 Callback data layout:
     var:open:<list>          open a list screen
@@ -22,11 +24,18 @@ Callback data layout:
     var:tmpl                 edit the prompt template
     var:back                 back to main menu
     var:close                close the panel
+    var:packs                open the packages screen
+    var:pack:view:<slug>     show a package's fields + template
+    var:pack:activate:<slug> activate a package
+    var:pack:del:<slug>      delete a package
+    var:pack:new             start creating a package
+    var:pack:back            back to main menu
 """
 
 from __future__ import annotations
 
 import html
+import json
 from typing import Any
 
 from aiogram import Dispatcher, F, types
@@ -40,6 +49,7 @@ import variables_store
 LIST_LABELS = {
     "poses": "Poses",
     "angles": "Ángulos",
+    "actions": "Acciones",
 }
 
 # Telegram allows up to 100 inline buttons; keep headroom for the back button.
@@ -55,6 +65,8 @@ class VarStates(StatesGroup):
     add_item = State()
     edit_text = State()
     template = State()
+    pack_name = State()
+    pack_json = State()
 
 
 def _chat_is_private(chat: types.Chat) -> bool:
@@ -169,7 +181,7 @@ def _menu_text() -> str:
     template = variables_store.get_template()
     lines.append(f"\n<b>Plantilla:</b> <code>{_esc(_truncate(template, 80))}</code>")
     lines.append(
-        "\n<i>Placeholders: {pose}, {angle}.</i> "
+        "\n<i>Placeholders: {pose}, {angle}, {action}.</i> "
         "Toque una lista para gestionarla."
     )
     return "\n".join(lines)
@@ -189,8 +201,9 @@ def _menu_keyboard() -> InlineKeyboardMarkup:
         ])
     buttons.append([
         InlineKeyboardButton(text="✏️ Plantilla", callback_data="var:tmpl"),
-        InlineKeyboardButton(text="❌ Cerrar", callback_data="var:close"),
+        InlineKeyboardButton(text="📦 Paquetes", callback_data="var:packs"),
     ])
+    buttons.append([InlineKeyboardButton(text="❌ Cerrar", callback_data="var:close")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -362,6 +375,8 @@ async def handle_var_cancel(callback: types.CallbackQuery, state: FSMContext):
         _state_key(VarStates.add_item),
         _state_key(VarStates.edit_text),
         _state_key(VarStates.template),
+        _state_key(VarStates.pack_name),
+        _state_key(VarStates.pack_json),
     }
     if current not in allowed:
         # Stale cancel button (panel already closed/navigated) — ignore.
@@ -553,8 +568,9 @@ async def handle_var_tmpl(callback: types.CallbackQuery, state: FSMContext):
     await safe_edit_text(
         callback.message,
         "✏️ <b>Plantilla del prompt</b>\n\n"
-        "Usa los placeholders <code>{pose}</code> y "
-        "<code>{angle}</code> para insertar las opciones aleatorias.\n\n"
+        "Usa los placeholders <code>{pose}</code>, "
+        "<code>{angle}</code> y <code>{action}</code> para insertar las "
+        "opciones aleatorias.\n\n"
         f"Actual: <code>{_esc(_truncate(template, 200))}</code>\n\n"
         "Envía la nueva plantilla:",
         parse_mode="HTML",
@@ -642,6 +658,259 @@ async def handle_template_text(message: types.Message, state: FSMContext):
 
 
 # ---------------------------------------------------------------------------
+# Paquetes de poses (gestión desde el panel)
+# ---------------------------------------------------------------------------
+def _packages_text() -> str:
+    packages = variables_store.list_packages()
+    active = variables_store.active_package_name()
+    lines = ["<b>📦 Paquetes de variables</b>\n"]
+    if active:
+        lines.append(f"Activo: <b>{_esc(active)}</b>\n")
+    else:
+        lines.append("Activo: <i>personalizado (editado a mano)</i>\n")
+    if not packages:
+        lines.append("<i>No hay paquetes guardados todavía.</i>\n")
+    lines.append(
+        "Cada paquete es un conjunto de listas + plantilla. "
+        "Créalo pegando su JSON."
+    )
+    return "\n".join(lines)
+
+
+def _packages_keyboard() -> InlineKeyboardMarkup:
+    buttons = []
+    for slug in variables_store.list_packages():
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"📦 {_truncate(slug, 40)}",
+                callback_data=f"var:pack:view:{slug}",
+            )
+        ])
+    buttons.append([InlineKeyboardButton(text="➕ Crear paquete", callback_data="var:pack:new")])
+    buttons.append([InlineKeyboardButton(text="← Menú", callback_data="var:pack:back")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def _package_view_text(slug: str) -> str:
+    payload = variables_store.load_package(slug)
+    if payload is None:
+        return "<b>📦 Paquete no encontrado.</b>"
+    lines = [f"<b>📦 {_esc(slug)}</b>", ""]
+    for field, items in payload["lists"].items():
+        label = LIST_LABELS.get(field, field)
+        lines.append(f"• <b>{label}</b> (<code>{_esc(field)}</code>): {len(items)} opcione{'s' if len(items) != 1 else 'n'}")
+    template = payload["template"]
+    lines.append(f"\n<b>Plantilla:</b> <code>{_esc(_truncate(template, 200))}</code>")
+    if variables_store.active_package_name() == slug:
+        lines.append("\n<i>✅ Este paquete está activo.</i>")
+    return "\n".join(lines)
+
+
+def _package_view_keyboard(slug: str) -> InlineKeyboardMarkup:
+    rows = []
+    if variables_store.active_package_name() != slug:
+        rows.append([
+            InlineKeyboardButton(text="✔ Activar", callback_data=f"var:pack:activate:{slug}"),
+        ])
+    rows.append([
+        InlineKeyboardButton(text="🗑 Eliminar", callback_data=f"var:pack:del:{slug}"),
+        InlineKeyboardButton(text="← Paquetes", callback_data="var:packs"),
+    ])
+    rows.append([InlineKeyboardButton(text="← Menú", callback_data="var:pack:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _pack_cancel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="← Cancelar", callback_data="var:cancel")]
+    ])
+
+
+async def _show_packages(target: types.Message, state: FSMContext, user_id: int) -> None:
+    safe_edit_text = _deps()["safe_edit_text"]
+    await state.set_state(VarStates.menu)
+    await state.update_data(
+        vars_message_id=target.message_id,
+        vars_chat_id=target.chat.id,
+    )
+    await safe_edit_text(
+        target,
+        _packages_text(),
+        parse_mode="HTML",
+        reply_markup=_packages_keyboard(),
+    )
+
+
+async def _show_package_view(target: types.Message, state: FSMContext, user_id: int, slug: str) -> None:
+    safe_edit_text = _deps()["safe_edit_text"]
+    await state.set_state(VarStates.menu)
+    await state.update_data(
+        vars_message_id=target.message_id,
+        vars_chat_id=target.chat.id,
+    )
+    await safe_edit_text(
+        target,
+        _package_view_text(slug),
+        parse_mode="HTML",
+        reply_markup=_package_view_keyboard(slug),
+    )
+
+
+async def handle_var_packs(callback: types.CallbackQuery, state: FSMContext):
+    if await _reject_non_private_callback(callback):
+        return
+    if await _reject_stale_callback(callback, state, allowed_states=(VarStates.menu,)):
+        return
+    await _show_packages(callback.message, state, callback.from_user.id)
+    await callback.answer()
+
+
+async def handle_pack_view(callback: types.CallbackQuery, state: FSMContext):
+    if await _reject_non_private_callback(callback):
+        return
+    if await _reject_stale_callback(callback, state, allowed_states=(VarStates.menu,)):
+        return
+    parts = callback.data.split(":")
+    if len(parts) != 4:
+        await callback.answer("Acción no válida.", show_alert=True)
+        return
+    slug = parts[3]
+    if not variables_store.package_exists(slug):
+        await callback.answer("Paquete no encontrado.", show_alert=True)
+        return
+    await _show_package_view(callback.message, state, callback.from_user.id, slug)
+    await callback.answer()
+
+
+async def handle_pack_activate(callback: types.CallbackQuery, state: FSMContext):
+    if await _reject_non_private_callback(callback):
+        return
+    if await _reject_stale_callback(callback, state, allowed_states=(VarStates.menu,)):
+        return
+    parts = callback.data.split(":")
+    if len(parts) != 4:
+        await callback.answer("Acción no válida.", show_alert=True)
+        return
+    slug = parts[3]
+    if not variables_store.activate_package(slug):
+        await callback.answer("No se pudo activar el paquete.", show_alert=True)
+        return
+    await _show_package_view(callback.message, state, callback.from_user.id, slug)
+    await callback.answer(f"✅ Paquete activado: {slug}")
+
+
+async def handle_pack_del(callback: types.CallbackQuery, state: FSMContext):
+    if await _reject_non_private_callback(callback):
+        return
+    if await _reject_stale_callback(callback, state, allowed_states=(VarStates.menu,)):
+        return
+    parts = callback.data.split(":")
+    if len(parts) != 4:
+        await callback.answer("Acción no válida.", show_alert=True)
+        return
+    slug = parts[3]
+    if variables_store.active_package_name() == slug:
+        await callback.answer("El paquete activo no se puede eliminar.", show_alert=True)
+        return
+    if not variables_store.delete_package(slug):
+        await callback.answer("No se pudo eliminar el paquete.", show_alert=True)
+        return
+    await _show_packages(callback.message, state, callback.from_user.id)
+    await callback.answer(f"Eliminado: {slug}")
+
+
+async def handle_pack_new(callback: types.CallbackQuery, state: FSMContext):
+    if await _reject_non_private_callback(callback):
+        return
+    if await _reject_stale_callback(callback, state, allowed_states=(VarStates.menu,)):
+        return
+    safe_edit_text = _deps()["safe_edit_text"]
+    await state.set_state(VarStates.pack_name)
+    await state.update_data(
+        vars_message_id=callback.message.message_id,
+        vars_chat_id=callback.message.chat.id,
+    )
+    await safe_edit_text(
+        callback.message,
+        "➕ <b>Crear paquete</b>\n\nEnvía el <b>nombre</b> del paquete "
+        "(ej. <i>2b_outfits</i>):",
+        parse_mode="HTML",
+        reply_markup=_pack_cancel_keyboard(),
+    )
+    await callback.answer()
+
+
+async def handle_pack_name_text(message: types.Message, state: FSMContext):
+    if await _reject_non_private_message(message):
+        return
+    name = message.text.strip()
+    slug = variables_store._slugify(name)
+    if not slug:
+        await message.answer("El nombre no es válido. Usa letras, números o espacios.")
+        return
+    data = await state.get_data()
+    old_chat_id = data.get("vars_chat_id")
+    old_message_id = data.get("vars_message_id")
+    await state.set_state(VarStates.pack_json)
+    await state.update_data(
+        pack_name=name,
+        pack_slug=slug,
+        vars_message_id=message.message_id,
+        vars_chat_id=message.chat.id,
+    )
+    prompt_msg = await message.answer(
+        "Ahora envía el <b>JSON</b> del paquete:\n\n"
+        "<code>{ \"lists\": { \"poses\": [...], \"angles\": [...], \"actions\": [...] }, "
+        "\"template\": \"...\" }</code>\n\n"
+        "También acepta <code>fields</code> en lugar de <code>lists</code>.",
+        parse_mode="HTML",
+        reply_markup=_pack_cancel_keyboard(),
+    )
+    await state.update_data(
+        vars_message_id=prompt_msg.message_id,
+        vars_chat_id=prompt_msg.chat.id,
+    )
+    if old_chat_id and old_message_id:
+        try:
+            await message.bot.delete_message(
+                chat_id=old_chat_id,
+                message_id=old_message_id,
+            )
+        except Exception:
+            pass
+
+
+async def handle_pack_json_text(message: types.Message, state: FSMContext):
+    if await _reject_non_private_message(message):
+        return
+    data = await state.get_data()
+    name = data.get("pack_name")
+    slug = data.get("pack_slug")
+    if not name or not slug:
+        await state.clear()
+        await message.answer("Sesión desactualizada. Usa /listas de nuevo.")
+        return
+    try:
+        payload = json.loads(message.text)
+    except json.JSONDecodeError:
+        await message.answer("JSON inválido. Revisa el formato e inténtalo de nuevo.")
+        return
+    ok, err = variables_store.save_package(name, payload)
+    if not ok:
+        await message.answer(f"No se pudo guardar el paquete: {err}")
+        return
+    variables_store.activate_package(name)
+    await _show_new_panel(
+        message,
+        state,
+        message.from_user.id,
+        _menu_text(),
+        _menu_keyboard(),
+    )
+    await message.answer(f"✅ Paquete <b>{_esc(slug)}</b> creado y activado.", parse_mode="HTML")
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 _VARS_DEPS: dict[str, Any] = {}
@@ -656,6 +925,8 @@ def register_variables_handlers(dp: Dispatcher, deps: dict[str, Any]) -> None:
     dp.message.register(handle_add_text, StateFilter(VarStates.add_item), F.text)
     dp.message.register(handle_edit_text, StateFilter(VarStates.edit_text), F.text)
     dp.message.register(handle_template_text, StateFilter(VarStates.template), F.text)
+    dp.message.register(handle_pack_name_text, StateFilter(VarStates.pack_name), F.text)
+    dp.message.register(handle_pack_json_text, StateFilter(VarStates.pack_json), F.text)
     dp.callback_query.register(handle_var_open, lambda c: c.data and c.data.startswith("var:open:"))
     dp.callback_query.register(handle_var_add, lambda c: c.data and c.data.startswith("var:add:"))
     dp.callback_query.register(handle_var_edit_list, lambda c: c.data and c.data.startswith("var:edit:"))
@@ -666,3 +937,9 @@ def register_variables_handlers(dp: Dispatcher, deps: dict[str, Any]) -> None:
     dp.callback_query.register(handle_var_cancel, lambda c: c.data == "var:cancel")
     dp.callback_query.register(handle_var_back, lambda c: c.data == "var:back")
     dp.callback_query.register(handle_var_close, lambda c: c.data == "var:close")
+    dp.callback_query.register(handle_var_packs, lambda c: c.data == "var:packs")
+    dp.callback_query.register(handle_pack_view, lambda c: c.data and c.data.startswith("var:pack:view:"))
+    dp.callback_query.register(handle_pack_activate, lambda c: c.data and c.data.startswith("var:pack:activate:"))
+    dp.callback_query.register(handle_pack_del, lambda c: c.data and c.data.startswith("var:pack:del:"))
+    dp.callback_query.register(handle_pack_new, lambda c: c.data == "var:pack:new")
+    dp.callback_query.register(handle_var_back, lambda c: c.data == "var:pack:back")
