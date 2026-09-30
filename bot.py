@@ -2915,15 +2915,15 @@ async def handle_photo_no_caption(message: types.Message):
     # grok / grok_video / seedream
     if get_model(message.from_user.id)["key"] == "grok_video":
         await message.answer(
-            "Para animar una imagen (imagen a video), enviala con un <b>caption</b> describiendo el movimiento.\n\n"
-            "Ejemplo: envia tu foto con el texto <i>\"haz que el agua caiga y aleja la camara lentamente\"</i>",
+            "Para animar una imagen (imagen a video), envíala con un <b>caption</b> describiendo el movimiento.\n\n"
+            "Ejemplo: envía tu foto con el texto <i>\"haz que el agua caiga y aleja la camara lentamente\"</i>",
             parse_mode="HTML",
         )
         return
 
     await message.answer(
-        "Para editar una imagen, enviala con un <b>caption</b> describiendo los cambios que quieres.\n\n"
-        "Ejemplo: envia tu foto con el texto <i>\"cambia el fondo a una playa al atardecer\"</i>",
+        "Para editar una imagen, envíala con un <b>caption</b> describiendo los cambios que quieres.\n\n"
+        "Ejemplo: envía tu foto con el texto <i>\"cambia el fondo a una playa al atardecer\"</i>",
         parse_mode="HTML",
     )
 
@@ -3141,8 +3141,8 @@ async def _process_grok_album_after_delay(cache_key: tuple, first_msg: types.Mes
     raw_caption = _album_prompt(messages)
     if not raw_caption:
         await first_msg.answer(
-            "Para editar una imagen, enviala con un <b>caption</b> describiendo los cambios que quieres.\n\n"
-            "Ejemplo: envia tu foto con el texto <i>\"cambia el fondo a una playa al atardecer\"</i>",
+            "Para editar una imagen, envíala con un <b>caption</b> describiendo los cambios que quieres.\n\n"
+            "Ejemplo: envía tu foto con el texto <i>\"cambia el fondo a una playa al atardecer\"</i>",
             parse_mode="HTML",
         )
         return
