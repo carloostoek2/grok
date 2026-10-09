@@ -585,7 +585,7 @@ def _validate_integrate_prerequisites(model: dict, user_id: int) -> tuple[BytesI
     if model.get("provider") != "xai":
         return None, (
             "La edición con referencia (/s) requiere el proveedor "
-            "<b>xAI (oficial)</b>. Cambialo en /config."
+            "<b>xAI (oficial)</b>. Cámbialo en /config."
         )
     return _load_integrate_ref_bytes(user_id)
 
@@ -1542,7 +1542,7 @@ async def handle_text(message: types.Message):
         else:
             await message.answer(
                 "Primero configura tu cara fuente con /cambiar_source.\n"
-                "Luego enviame fotos para intercambiar las caras.",
+                "Luego envíame fotos para intercambiar las caras.",
             )
         return
 

@@ -372,7 +372,7 @@ def _simple_model_text(deps: dict[str, Any], model_key: str) -> str:
         lines.append("Usa /cambiar_source para configurar tu cara fuente.\n")
         lines.append("Luego Envía fotos (incluso albumes) para hacer face swap.")
     elif model_key == "seedream":
-        lines.append("Enviame un prompt para generar una imagen.")
+        lines.append("Envíame un prompt para generar una imagen.")
         lines.append("O Envía una foto con caption para editarla.")
     return "\n".join(lines)
 
